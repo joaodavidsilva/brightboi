@@ -30,10 +30,20 @@ final class RealKeyTap: KeyTapControlling {
     private static let brightnessUpKeyCode: Int32 = 2
     private static let brightnessDownKeyCode: Int32 = 3
 
-    // The `NX_SYSDEFINED` "keyState" nibble that means key-down. This
-    // data1 bit layout is undocumented by Apple but a long-stable
+    // The `NX_SYSDEFINED` "keyState" nibble that means key-down, and the
+    // `data1` bit layout it's packed into (top 16 bits: key code, next byte:
+    // state). Both are undocumented by Apple but a long-stable
     // reverse-engineered convention (used by e.g. MediaKeyTap, Karabiner).
-    private static let keyDownState: Int64 = 0x0A
+    private static let keyDownState: Int = 0x0A
+    private static let keyCodeMask: Int = 0xFFFF0000
+    private static let keyCodeShift: Int = 16
+    private static let keyStateMask: Int = 0xFF00
+    private static let keyStateShift: Int = 8
+
+    // `NX_SUBTYPE_AUX_CONTROL_BUTTONS` — the `NSEvent.subtype` that marks a
+    // `systemDefined` event as a media-key event (brightness/volume/etc.)
+    // rather than some other system-defined event.
+    private static let auxControlButtonsSubtype: Int16 = 8
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -133,26 +143,21 @@ final class RealKeyTap: KeyTapControlling {
             return Unmanaged.passUnretained(cgEvent)
         }
 
-        if let press = brightnessMediaKeyPress(from: type, cgEvent: cgEvent) {
-            onKeyPress?(press)
-            return nil
-        }
+        let press = brightnessMediaKeyPress(from: type, cgEvent: cgEvent)
+            ?? fnBrightnessKeyPress(from: type, cgEvent: cgEvent)
 
-        if let press = fnBrightnessKeyPress(from: type, cgEvent: cgEvent) {
-            onKeyPress?(press)
-            return nil
-        }
-
-        return Unmanaged.passUnretained(cgEvent)
+        guard let press else { return Unmanaged.passUnretained(cgEvent) }
+        onKeyPress?(press)
+        return nil
     }
 
     private func brightnessMediaKeyPress(from type: CGEventType, cgEvent: CGEvent) -> BrightnessController.KeyPress? {
         guard type.rawValue == NSEvent.EventType.systemDefined.rawValue,
               let nsEvent = NSEvent(cgEvent: cgEvent),
-              nsEvent.subtype.rawValue == 8 else { return nil }
+              nsEvent.subtype.rawValue == Self.auxControlButtonsSubtype else { return nil }
 
-        let keyCode = Int32((nsEvent.data1 & 0xFFFF0000) >> 16)
-        let keyState = (nsEvent.data1 & 0xFF00) >> 8
+        let keyCode = Int32((nsEvent.data1 & Self.keyCodeMask) >> Self.keyCodeShift)
+        let keyState = (nsEvent.data1 & Self.keyStateMask) >> Self.keyStateShift
         guard keyState == Self.keyDownState else { return nil }
 
         switch keyCode {
