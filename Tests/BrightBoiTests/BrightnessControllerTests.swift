@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import BrightBoi
@@ -190,5 +191,17 @@ struct BrightnessControllerTests {
         try await Task.sleep(for: .milliseconds(250))
 
         #expect(fixture.persistence.savedPercentages == [30])
+    }
+
+    @Test("flushes a pending debounced save immediately when the app is about to terminate")
+    func flushesPendingPersistOnTermination() {
+        let fixture = makeFixture(persistenceDebounceInterval: 30)
+
+        fixture.controller.setPercentage(42)
+        #expect(fixture.persistence.savedPercentages.isEmpty)
+
+        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: nil)
+
+        #expect(fixture.persistence.savedPercentages == [42])
     }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -39,6 +40,7 @@ final class BrightnessController {
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
     private var pendingPersistWorkItem: DispatchWorkItem?
+    private var terminationObserver: NSObjectProtocol?
 
     init(
         displayBrightness: DisplayBrightnessProviding,
@@ -65,6 +67,23 @@ final class BrightnessController {
         self.autoBrightnessToggle.disableAutoBrightness()
         self.loginItemService.registerForLaunchAtLogin()
         self.keyTap.startIntercepting()
+
+        // The debounce window (default 0.3s) would otherwise drop the final
+        // percentage if the user quits right after their last slider/key
+        // move — flush any pending save synchronously before the app exits.
+        self.terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.flushPendingPersist()
+        }
+    }
+
+    deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
+        }
     }
 
     func setPercentage(_ percentage: Double) {
@@ -87,6 +106,13 @@ final class BrightnessController {
         }
         pendingPersistWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + persistenceDebounceInterval, execute: workItem)
+    }
+
+    private func flushPendingPersist() {
+        guard let pendingPersistWorkItem else { return }
+        pendingPersistWorkItem.cancel()
+        persistence.save(percentage: currentState.percentage)
+        self.pendingPersistWorkItem = nil
     }
 
     private static func clamp(_ percentage: Double) -> Double {

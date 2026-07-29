@@ -5,8 +5,8 @@ struct BrightBoiApp: App {
     @State private var controller = BrightnessController(
         displayBrightness: LiveDisplayBrightnessProvider(),
         autoBrightnessToggle: RealAutoBrightnessToggle(),
-        loginItemService: PlaceholderLoginItemService(),
-        persistence: PlaceholderBrightnessPersistence(),
+        loginItemService: RealLoginItemService(),
+        persistence: RealBrightnessPersistence(),
         keyTap: PlaceholderKeyTap()
     )
 

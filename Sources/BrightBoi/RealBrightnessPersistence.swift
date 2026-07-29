@@ -1,0 +1,33 @@
+import Foundation
+
+/// Real `BrightnessPersisting`, backed by `UserDefaults.standard`. Plain
+/// `UserDefaults` already durably survives app relaunch, sleep/wake, and
+/// reboot (it's written through to disk, not just kept in memory) — no
+/// custom durability mechanism needed beyond reading/writing the one key.
+final class RealBrightnessPersistence: BrightnessPersisting {
+    private static let percentageKey = "com.ptlghost.BrightBoi.percentage"
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func save(percentage: Double) {
+        defaults.set(percentage, forKey: Self.percentageKey)
+    }
+
+    /// `UserDefaults.double(forKey:)` returns `0` for a missing key, which
+    /// would be indistinguishable from a genuinely-saved `0%` — reading via
+    /// `object(forKey:)` first tells the two cases apart. On a genuinely
+    /// fresh install (nothing saved yet), reports the old Nominal ceiling
+    /// (100%) rather than `BrightnessController`'s own `0%` fallback:
+    /// `BrightnessController` applies whatever this returns to the real
+    /// display on every launch, so `nil` here would blank the actual screen
+    /// on first run before the user has touched anything — the same concern
+    /// ticket 04's placeholder was written to avoid, which doesn't go away
+    /// now that persistence is real.
+    func loadPercentage() -> Double? {
+        defaults.object(forKey: Self.percentageKey) as? Double ?? BrightnessController.nominalCeilingPercentage
+    }
+}
