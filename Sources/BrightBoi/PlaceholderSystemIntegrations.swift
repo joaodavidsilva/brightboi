@@ -1,16 +1,11 @@
 import Foundation
 
 /// No-op stand-ins for the system-integration protocols that don't yet have
-/// real implementations (ticket 04 only supplies the real
-/// `DisplayBrightnessProviding`). `BrightnessController` still requires a
-/// concrete value for every protocol, so these let the app actually run
-/// end-to-end rather than blocking on tickets 06/07/08. Each is replaced by
-/// its ticket's real implementation, not extended in place.
-
-/// Ticket 06 supplies the real implementation.
-final class PlaceholderAutoBrightnessToggle: AutoBrightnessToggling {
-    func disableAutoBrightness() {}
-}
+/// real implementations (tickets 04/06 supply the real
+/// `DisplayBrightnessProviding`/`AutoBrightnessToggling`). `BrightnessController`
+/// still requires a concrete value for every protocol, so these let the app
+/// actually run end-to-end rather than blocking on tickets 07/08. Each is
+/// replaced by its ticket's real implementation, not extended in place.
 
 /// Ticket 08 supplies the real `SMAppService`-backed implementation.
 final class PlaceholderLoginItemService: LoginItemRegistering {

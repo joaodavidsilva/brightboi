@@ -174,12 +174,56 @@ looks over- or under-driven.
   ticket 04/05 should budget for it as part of `DisplayBrightnessProviding`,
   not treat it as a simple wrapper over a single symbol).
 
-## Auto-Brightness Takeover: out of scope here, confirmed
+## Auto-Brightness Takeover (ticket 06): `CoreBrightness.framework`'s `CBALC*`
 
-Nothing above touches macOS's native "Automatically adjust brightness"
-toggle. That's ticket 06's concern per both this ticket's scope note and the
-spec's Implementation Decisions section. No mechanism for it was researched
-or needed for value control.
+Ticket 02 (above) didn't research this — it's ticket 06's concern. Findings
+below are from ticket 06's own small spike
+(`.scratch/brightboi/research/auto-brightness-spike.swift`, raw output in
+`run-log.txt`), same target machine.
+
+- **Dead end:** `DisplayServices.framework` exports
+  `DisplayServicesAmbientLightCompensationEnabled` /
+  `DisplayServicesEnableAmbientLightCompensation` — both resolve via
+  `dlsym`, but toggling one changed neither its own getter nor
+  `system_profiler SPDisplaysDataType`'s "Automatically Adjust Brightness"
+  field. A symbol resolving is not evidence it does what its name implies;
+  this is very likely a color/TrueTone-adjacent ambient compensation, not
+  the brightness auto-adjust toggle. Abandoned.
+- **Confirmed working:** `CoreBrightness.framework` exports
+  `CBALCGetDisplayAutoBrightnessEnabled() -> Bool` and
+  `CBALCSetDisplayAutoBrightnessEnabled(Bool) -> Void` ("ALC" = Ambient
+  Light Client). Found via `dyld_info -exports CoreBrightness.framework`
+  (grep for `auto`/`ambient`) rather than guess-a-name-then-`dlsym`, since
+  `dlsym` can't enumerate a framework's exports and nobody would guess this
+  name unprompted — `otool`/`nm` can't read the file either, since on this
+  OS it's a broken symlink into the dyld shared cache; `dyld_info` reads
+  the export trie directly and does resolve through the cache.
+- Calling the setter flips `defaults read com.apple.CoreBrightness`'s
+  `"Automatic Display Enabled"` key in both directions, and that same key
+  is confirmed to be what System Settings' own checkbox writes (verified by
+  force-quitting System Settings, performing a real click on Displays >
+  "Ajustar brilho automaticamente", and re-reading the preference).
+  `log show --predicate 'process == "corebrightnessd"'` during a call shows
+  the real root daemon (PID matches `ps aux | grep corebrightnessd`)
+  processing it — a `DisplayBrightnessAuto` key changing and
+  `CBRampManager`/`SDR_RAMP` activity — not just a local plist write with no
+  live effect.
+- **Caveat, not fully resolved:** System Settings' Displays pane sometimes
+  did not visually refresh its checkbox after a raw `CBALCSet` call, even
+  after a full quit+relaunch of the pane — only a real user click resynced
+  its view. The daemon-log evidence above indicates the underlying setting
+  did change regardless; this looks like the Settings extension not
+  observing a live notification our one-shot, unentitled CLI process
+  doesn't send, rather than the preference write being inert. Flagged
+  rather than guessed further — worth a fresh look if a user report says
+  the Settings checkbox looks stale after BrightBoi disables the setting.
+- **Reliability note:** calling the getter twice in the same process in
+  quick succession (immediately after a `set`) crashed with `SIGSEGV`
+  inside `CBALCGetBoolPreferenceForKey` on both tries; the getter alone as
+  the only call in a fresh process succeeded on every try (6+). This
+  matches `BrightnessController`'s actual usage shape — one
+  `disableAutoBrightness()` call, once, at controller init, no read-back —
+  not the crashing one, so the real implementation only calls the setter.
 
 ## Flag for the user: ADR-0001 premise
 
