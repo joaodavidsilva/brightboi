@@ -12,11 +12,17 @@ import SwiftUI
 /// fractions instead.
 ///
 /// `iconFillFraction` spans the full 0...200% range (`percentage / 200`, per
-/// ticket 03), so within ticket 04's 0–100% UI this only ever reaches half
-/// fill — intentional per the spec's single continuous slider design (spec
-/// Implementation Decisions: the icon renderer consumes the controller's
-/// derived fraction rather than recomputing its own), signaling there's more
-/// headroom above once ticket 05 exposes Boost.
+/// ticket 03) — at Nominal 100% this reaches exactly half fill, at Boost
+/// 200% it reaches full.
+///
+/// Fill level alone doesn't satisfy spec item 3 (the icon must look visually
+/// distinct once Boosted, not just "more full") — menu bar icons can be
+/// template-rendered (monochrome) by macOS, so a color-only cue risks being
+/// silently flattened. A small badge glyph, consuming `isBoosted` directly
+/// (per the spec: the icon renderer consumes derived state, not recomputed
+/// state) survives that. Manual verification on the target machine still
+/// needed — this is UI, explicitly out of the controller-level test seam per
+/// the spec's Testing Decisions.
 struct BrightnessMenuBarIcon: View {
     var controller: BrightnessController
 
@@ -32,6 +38,13 @@ struct BrightnessMenuBarIcon: View {
                             .frame(maxHeight: .infinity, alignment: .bottom)
                     }
                 }
+        }
+        .overlay(alignment: .topTrailing) {
+            if controller.currentState.isBoosted {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 8))
+                    .offset(x: 5, y: -3)
+            }
         }
     }
 }

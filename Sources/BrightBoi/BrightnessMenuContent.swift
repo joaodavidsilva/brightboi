@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// The dropdown shown when the menu bar icon is clicked. Ticket 04 exposes
-/// only the Nominal Brightness range (0–100%) — Boost's 100–200% is ticket
-/// 05's UI to add, per that ticket's explicit scope boundary.
+/// The dropdown shown when the menu bar icon is clicked: one continuous
+/// slider spanning Nominal Brightness and Extended Brightness / Boost
+/// (0–200%), per the spec's "one smooth motion, not a separate mode" design.
+/// Dragging below 100% is byte-identical to ticket 04's behavior; the
+/// controller (not this view) owns where the Nominal/Boost boundary falls.
 struct BrightnessMenuContent: View {
     var controller: BrightnessController
 
@@ -16,7 +18,7 @@ struct BrightnessMenuContent: View {
                     get: { controller.currentState.percentage },
                     set: { controller.setPercentage($0) }
                 ),
-                in: BrightnessController.minimumPercentage...BrightnessController.nominalCeilingPercentage
+                in: BrightnessController.minimumPercentage...BrightnessController.maximumPercentage
             )
 
             Text("\(Int(controller.currentState.percentage.rounded()))%")

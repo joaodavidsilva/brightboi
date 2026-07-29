@@ -8,26 +8,47 @@ import CoreGraphics
 /// value Control Center's own slider reads and writes — no translation
 /// needed beyond dividing by 100.
 ///
-/// Extended Brightness / Boost (100–200%, the EDR-trigger + gamma-table
-/// technique) is ticket 05's job. Until then, percentages above 100 are
-/// clamped to the Nominal ceiling here rather than left unhandled, since
-/// `BrightnessController` itself tracks the full 0...200 range.
+/// Extended Brightness / Boost (100–200%) is delegated to `BoostEngagement`
+/// (`BoostEngagement.swift`) — the *other* mechanism ticket 02 confirmed
+/// working, since there is no reliable private "set brightness past 1.0"
+/// symbol on this hardware/OS. Anchored per ADR-0002: factor 1.0 (500 nits,
+/// Nominal ceiling) at 100%, factor 2.0 (1000 nits sustained) at 200%.
 final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
     private typealias SetBrightnessFunc = @convention(c) (CGDirectDisplayID, Float) -> Int32
 
     private let displayID: CGDirectDisplayID
     private let setBrightness: SetBrightnessFunc?
+    private let boostEngagement: BoostEngagement
 
     init() {
-        self.displayID = Self.resolveBuiltInDisplayID()
+        let displayID = Self.resolveBuiltInDisplayID()
+        self.displayID = displayID
         self.setBrightness = Self.loadSetBrightnessSymbol()
+        self.boostEngagement = BoostEngagement(displayID: displayID)
     }
 
     func apply(percentage: Double) {
+        applyNominal(percentage: percentage)
+        applyBoost(percentage: percentage)
+    }
+
+    private func applyNominal(percentage: Double) {
         guard let setBrightness else { return }
         let nominalPercentage = min(max(percentage, 0), BrightnessController.nominalCeilingPercentage)
         let value = Float(nominalPercentage / BrightnessController.nominalCeilingPercentage)
         _ = setBrightness(displayID, value)
+    }
+
+    private func applyBoost(percentage: Double) {
+        guard percentage > BrightnessController.nominalCeilingPercentage else {
+            boostEngagement.disengage()
+            return
+        }
+
+        let boostRange = BrightnessController.maximumPercentage - BrightnessController.nominalCeilingPercentage
+        let boostFraction = min(max(percentage - BrightnessController.nominalCeilingPercentage, 0), boostRange) / boostRange
+        let factor = CGGammaValue(1.0 + boostFraction)
+        boostEngagement.engage(factor: factor)
     }
 
     /// Per the spec's scope boundary (built-in display only, never an
