@@ -7,7 +7,7 @@ struct BrightBoiApp: App {
         autoBrightnessToggle: RealAutoBrightnessToggle(),
         loginItemService: RealLoginItemService(),
         persistence: RealBrightnessPersistence(),
-        keyTap: PlaceholderKeyTap()
+        keyTap: RealKeyTap()
     )
 
     var body: some Scene {

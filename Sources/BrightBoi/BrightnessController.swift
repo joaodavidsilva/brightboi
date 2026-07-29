@@ -66,7 +66,9 @@ final class BrightnessController {
         // Session-start-only effects: fired once here, never again per session.
         self.autoBrightnessToggle.disableAutoBrightness()
         self.loginItemService.registerForLaunchAtLogin()
-        self.keyTap.startIntercepting()
+        self.keyTap.startIntercepting { [weak self] press in
+            self?.handleKeyPress(press)
+        }
 
         // The debounce window (default 0.3s) would otherwise drop the final
         // percentage if the user quits right after their last slider/key

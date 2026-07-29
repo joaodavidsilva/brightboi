@@ -27,7 +27,9 @@ protocol BrightnessPersisting {
 }
 
 /// Starts the system-wide F1/F2 key tap. Ticket 07 supplies the real
-/// `CGEventTap`-backed implementation.
+/// `CGEventTap`-backed implementation. `onKeyPress` is how the tap reports
+/// each intercepted press back to `BrightnessController` — the tap itself
+/// has no reference to the controller.
 protocol KeyTapControlling {
-    func startIntercepting()
+    func startIntercepting(onKeyPress: @escaping (BrightnessController.KeyPress) -> Void)
 }

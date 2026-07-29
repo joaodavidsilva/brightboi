@@ -43,8 +43,16 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
 
 final class FakeKeyTap: KeyTapControlling {
     private(set) var startCallCount = 0
+    private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
 
-    func startIntercepting() {
+    func startIntercepting(onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
         startCallCount += 1
+        self.onKeyPress = onKeyPress
+    }
+
+    /// Simulates a real key tap reporting a press, exercising the same
+    /// callback path `RealKeyTap` drives in production.
+    func simulateKeyPress(_ press: BrightnessController.KeyPress) {
+        onKeyPress?(press)
     }
 }

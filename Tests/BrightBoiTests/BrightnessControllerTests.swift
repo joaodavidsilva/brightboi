@@ -163,6 +163,14 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.percentage == 0)
     }
 
+    @Test("a press reported by the key tap drives the controller the same way a direct call does")
+    func keyTapReportedPressDrivesController() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        fixture.keyTap.simulateKeyPress(.raise)
+        #expect(fixture.controller.currentState.percentage == 56.25)
+    }
+
     // MARK: Persistence
 
     @Test("restores the persisted percentage on re-initialization, simulating relaunch")
