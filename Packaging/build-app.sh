@@ -7,7 +7,11 @@
 #   - CODESIGN_IDENTITY env var, if set, wins.
 #   - Otherwise the first installed "Developer ID Application" identity.
 #   - Otherwise falls back to ad-hoc signing ("-") for local dev/testing only —
-#     not suitable for distribution. Notarization is configured in ticket 09.
+#     not suitable for distribution.
+#
+# Always signs with the hardened runtime (--options runtime): notarization
+# requires it, and it's harmless for local ad-hoc test builds too. For the
+# full notarize-and-package release pipeline, see Packaging/release.sh.
 set -euo pipefail
 
 CONFIGURATION="${1:-debug}"
@@ -31,6 +35,6 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
     CODESIGN_IDENTITY="-"
 fi
 
-codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"
+codesign --force --deep --options runtime --sign "$CODESIGN_IDENTITY" "$APP_DIR"
 
 echo "Built $APP_DIR (signed with: $CODESIGN_IDENTITY)"
