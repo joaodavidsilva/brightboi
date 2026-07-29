@@ -2,11 +2,19 @@ import SwiftUI
 
 @main
 struct BrightBoiApp: App {
+    @State private var controller = BrightnessController(
+        displayBrightness: LiveDisplayBrightnessProvider(),
+        autoBrightnessToggle: PlaceholderAutoBrightnessToggle(),
+        loginItemService: PlaceholderLoginItemService(),
+        persistence: PlaceholderBrightnessPersistence(),
+        keyTap: PlaceholderKeyTap()
+    )
+
     var body: some Scene {
         MenuBarExtra {
-            PlaceholderMenuContent()
+            BrightnessMenuContent(controller: controller)
         } label: {
-            Image(systemName: "sun.max")
+            BrightnessMenuBarIcon(controller: controller)
         }
         .menuBarExtraStyle(.window)
     }

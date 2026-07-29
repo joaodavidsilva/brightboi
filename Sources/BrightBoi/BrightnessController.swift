@@ -1,10 +1,15 @@
 import Foundation
+import Observation
 
 /// The single seam the whole app is built around. Internally depends only on
 /// small protocols for every system-facing effect (`DisplayBrightnessProviding`,
 /// `AutoBrightnessToggling`, `LoginItemRegistering`, `BrightnessPersisting`,
 /// `KeyTapControlling`) — real implementations arrive in later tickets; this
 /// ticket establishes the seam and its fully-fake-backed test suite.
+///
+/// `@Observable` so the menu bar UI (slider, live icon) re-renders as
+/// `currentState` changes, without needing a separate published wrapper.
+@Observable
 final class BrightnessController {
     /// Percentage bounds per the spec: 0–100 is Nominal Brightness,
     /// 100–200 is Extended Brightness / Boost.
