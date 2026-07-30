@@ -2,6 +2,7 @@ import AppKit
 import CoreGraphics
 import Foundation
 import IOKit.hid
+import os
 
 /// Real `KeyTapControlling`: a session-level `CGEventTap` that intercepts the
 /// physical F1/F2 brightness keys system-wide, in both the forms a Mac
@@ -49,6 +50,14 @@ final class RealKeyTap: KeyTapControlling {
     private var runLoopSource: CFRunLoopSource?
     private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
 
+    // TEMPORARY (ticket 04): diagnostic instrumentation for the F1/F2
+    // permission mismatch. Remove this logger and every call site tagged
+    // "ticket 04" once ticket 05 lands the real fix.
+    private static let diagnosticLog = Logger(
+        subsystem: "com.ptlghost.BrightBoi",
+        category: "ticket04-permissions"
+    )
+
     func startIntercepting(onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
         self.onKeyPress = onKeyPress
         requestPermissionsIfNeeded()
@@ -65,8 +74,16 @@ final class RealKeyTap: KeyTapControlling {
     /// every future launch, so this explanation alert naturally shows only
     /// on first run.
     private func requestPermissionsIfNeeded() {
-        let needsAccessibility = !AXIsProcessTrusted()
-        let needsInputMonitoring = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted
+        let trusted = AXIsProcessTrusted()
+        let inputMonitoringAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
+        let needsAccessibility = !trusted
+        let needsInputMonitoring = inputMonitoringAccess != kIOHIDAccessTypeGranted
+
+        // ticket 04: dump the raw values both APIs return at launch, since
+        // this is the disagreement being diagnosed.
+        Self.diagnosticLog.notice(
+            "ticket04 AXIsProcessTrusted()=\(trusted, privacy: .public) IOHIDCheckAccess(listenEvent)=\(String(describing: inputMonitoringAccess), privacy: .public) needsAccessibility=\(needsAccessibility, privacy: .public) needsInputMonitoring=\(needsInputMonitoring, privacy: .public)"
+        )
 
         guard needsAccessibility || needsInputMonitoring else { return }
 
@@ -121,9 +138,15 @@ final class RealKeyTap: KeyTapControlling {
             FileHandle.standardError.write(Data(
                 "BrightBoi: could not create key event tap (Accessibility/Input Monitoring permission likely not granted yet)\n".utf8
             ))
+            // ticket 04: mirror the failure into the diagnostic log so it
+            // shows up alongside the permission-check dump above.
+            Self.diagnosticLog.notice("ticket04 CGEvent.tapCreate returned nil")
             return
         }
 
+        // ticket 04: confirm a successful tap creation too, so "no log line
+        // at all" isn't confused with "tap created successfully".
+        Self.diagnosticLog.notice("ticket04 CGEvent.tapCreate succeeded")
         eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
