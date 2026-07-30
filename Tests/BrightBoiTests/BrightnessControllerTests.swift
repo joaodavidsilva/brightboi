@@ -75,7 +75,9 @@ struct BrightnessControllerTests {
     @Test("just past 100% is Boosted")
     func justPastCeilingIsBoosted() {
         let fixture = makeFixture()
-        fixture.controller.setPercentage(100.01)
+        // 100.01 no longer makes sense once every set percentage resolves to
+        // a 5% step — 105 is the nearest reachable value above the boundary.
+        fixture.controller.setPercentage(105)
         #expect(fixture.controller.currentState.isBoosted == true)
     }
 
@@ -122,6 +124,38 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.iconFillFraction == 1)
     }
 
+    // MARK: 5% granularity
+
+    @Test("setPercentage rounds to the nearest multiple of 5")
+    func setPercentageRoundsToNearestFive() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(81)
+        #expect(fixture.controller.currentState.percentage == 80)
+    }
+
+    @Test("setPercentage rounds a tie down to the lower multiple of 5")
+    func setPercentageRoundsTieDown() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(137.5)
+        #expect(fixture.controller.currentState.percentage == 135)
+    }
+
+    @Test("a key press from a 5-aligned value lands on the next multiple of 5")
+    func keyPressFromAlignedValueRaisesToNextFive() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        fixture.controller.handleKeyPress(.raise)
+        #expect(fixture.controller.currentState.percentage == 55)
+    }
+
+    @Test("a key press from a 5-aligned value lands on the previous multiple of 5")
+    func keyPressFromAlignedValueLowersToPreviousFive() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        fixture.controller.handleKeyPress(.lower)
+        #expect(fixture.controller.currentState.percentage == 45)
+    }
+
     // MARK: Auto-Brightness Takeover
 
     @Test("Takeover fires exactly once on controller start, not per setPercentage call")
@@ -155,31 +189,36 @@ struct BrightnessControllerTests {
         let fixture = makeFixture()
         fixture.controller.setPercentage(50)
         fixture.controller.handleKeyPress(.raise)
-        #expect(fixture.controller.currentState.percentage == 56.25)
+        #expect(fixture.controller.currentState.percentage == 55)
     }
 
     @Test("key press lowers back across the 100% boundary into Nominal")
     func keyPressLowersAcrossBoundary() {
         let fixture = makeFixture()
-        fixture.controller.setPercentage(102)
+        fixture.controller.setPercentage(105)
         fixture.controller.handleKeyPress(.lower)
-        #expect(fixture.controller.currentState.percentage == 95.75)
+        #expect(fixture.controller.currentState.percentage == 100)
         #expect(fixture.controller.currentState.isBoosted == false)
     }
 
     @Test("key press raises across the 100% boundary into Boost")
     func keyPressRaisesAcrossBoundary() {
         let fixture = makeFixture()
-        fixture.controller.setPercentage(98)
+        fixture.controller.setPercentage(100)
         fixture.controller.handleKeyPress(.raise)
-        #expect(fixture.controller.currentState.percentage == 104.25)
+        #expect(fixture.controller.currentState.percentage == 105)
         #expect(fixture.controller.currentState.isBoosted == true)
     }
 
     @Test("key press clamps at the 200% ceiling")
     func keyPressClampsAtCeiling() {
         let fixture = makeFixture()
-        fixture.controller.setPercentage(198)
+        // Start already at the ceiling (not just near it) — with a 5%
+        // granularity that evenly divides the 200% ceiling, a value one
+        // step below (195) would land exactly on 200 without ever needing
+        // to clamp. Only a raise from the ceiling itself exercises the
+        // key press's own clamping, as opposed to setPercentage's.
+        fixture.controller.setPercentage(200)
         fixture.controller.handleKeyPress(.raise)
         #expect(fixture.controller.currentState.percentage == 200)
     }
@@ -187,7 +226,9 @@ struct BrightnessControllerTests {
     @Test("key press clamps at the 0% floor")
     func keyPressClampsAtFloor() {
         let fixture = makeFixture()
-        fixture.controller.setPercentage(2)
+        // Same reasoning as the ceiling test above: start at the floor
+        // itself so the assertion exercises the key press's own clamping.
+        fixture.controller.setPercentage(0)
         fixture.controller.handleKeyPress(.lower)
         #expect(fixture.controller.currentState.percentage == 0)
     }
@@ -197,15 +238,17 @@ struct BrightnessControllerTests {
         let fixture = makeFixture()
         fixture.controller.setPercentage(50)
         fixture.keyTap.simulateKeyPress(.raise)
-        #expect(fixture.controller.currentState.percentage == 56.25)
+        #expect(fixture.controller.currentState.percentage == 55)
     }
 
     // MARK: Persistence
 
     @Test("restores the persisted percentage on re-initialization, simulating relaunch")
     func restoresPersistedValueOnInit() {
+        // A pre-granularity persisted value (137.5) is rounded the same way
+        // a live setPercentage call would be — down to 135.
         let fixture = makeFixture(storedPercentage: 137.5)
-        #expect(fixture.controller.currentState.percentage == 137.5)
+        #expect(fixture.controller.currentState.percentage == 135)
         #expect(fixture.controller.currentState.isBoosted == true)
     }
 
@@ -239,6 +282,7 @@ struct BrightnessControllerTests {
 
         NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: nil)
 
-        #expect(fixture.persistence.savedPercentages == [42])
+        // 42 rounds to 40 before it's ever persisted.
+        #expect(fixture.persistence.savedPercentages == [40])
     }
 }

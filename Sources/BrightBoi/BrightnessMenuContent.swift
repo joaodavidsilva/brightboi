@@ -22,7 +22,8 @@ struct BrightnessMenuContent: View {
                     controller.currentState.supportsBoost
                         ? BrightnessController.maximumPercentage
                         : BrightnessController.nominalCeilingPercentage
-                )
+                ),
+                step: BrightnessController.percentageGranularity
             )
 
             Text("\(Int(controller.currentState.percentage.rounded()))%")

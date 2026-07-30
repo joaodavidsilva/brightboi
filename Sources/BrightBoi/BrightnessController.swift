@@ -17,6 +17,7 @@ final class BrightnessController {
     static let minimumPercentage: Double = 0
     static let maximumPercentage: Double = 200
     static let nominalCeilingPercentage: Double = 100
+    static let percentageGranularity: Double = 5
 
     struct State: Equatable {
         var percentage: Double
@@ -50,7 +51,7 @@ final class BrightnessController {
         loginItemService: LoginItemRegistering,
         persistence: BrightnessPersisting,
         keyTap: KeyTapControlling,
-        keyStepPercentage: Double = 6.25,
+        keyStepPercentage: Double = percentageGranularity,
         persistenceDebounceInterval: TimeInterval = 0.3
     ) {
         self.displayBrightness = displayBrightness
@@ -69,7 +70,7 @@ final class BrightnessController {
         self.supportsBoost = supportsBoost
 
         let effectiveMaximum = Self.effectiveMaximum(supportsBoost: supportsBoost)
-        let restoredPercentage = Self.clamp(persistence.loadPercentage() ?? Self.minimumPercentage, to: effectiveMaximum)
+        let restoredPercentage = Self.resolvedPercentage(persistence.loadPercentage() ?? Self.minimumPercentage, effectiveMaximum: effectiveMaximum)
         self.currentState = Self.state(for: restoredPercentage, supportsBoost: supportsBoost)
         self.displayBrightness.apply(percentage: restoredPercentage)
 
@@ -99,10 +100,10 @@ final class BrightnessController {
     }
 
     func setPercentage(_ percentage: Double) {
-        let clamped = Self.clamp(percentage, to: Self.effectiveMaximum(supportsBoost: supportsBoost))
-        currentState = Self.state(for: clamped, supportsBoost: supportsBoost)
-        displayBrightness.apply(percentage: clamped)
-        schedulePersist(clamped)
+        let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: Self.effectiveMaximum(supportsBoost: supportsBoost))
+        currentState = Self.state(for: resolved, supportsBoost: supportsBoost)
+        displayBrightness.apply(percentage: resolved)
+        schedulePersist(resolved)
     }
 
     func handleKeyPress(_ press: KeyPress) {
@@ -136,6 +137,19 @@ final class BrightnessController {
 
     private static func clamp(_ percentage: Double, to effectiveMaximum: Double) -> Double {
         min(max(percentage, minimumPercentage), effectiveMaximum)
+    }
+
+    /// Rounds to the nearest multiple of `percentageGranularity`, ties
+    /// breaking down (e.g. 137.5 -> 135, not 140) — every slider drag, key
+    /// press, and restored-from-persistence value goes through this so the
+    /// physical keys and the slider always land on the same grid.
+    private static func roundToGranularity(_ percentage: Double) -> Double {
+        let steps = ((percentage / percentageGranularity) - 0.5).rounded(.up)
+        return steps * percentageGranularity
+    }
+
+    private static func resolvedPercentage(_ percentage: Double, effectiveMaximum: Double) -> Double {
+        roundToGranularity(clamp(percentage, to: effectiveMaximum))
     }
 
     private static func state(for percentage: Double, supportsBoost: Bool) -> State {
