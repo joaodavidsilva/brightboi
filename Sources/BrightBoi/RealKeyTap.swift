@@ -46,10 +46,6 @@ final class RealKeyTap: KeyTapControlling {
     // rather than some other system-defined event.
     private static let auxControlButtonsSubtype: Int16 = 8
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
-    private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
-
     // TEMPORARY (ticket 04): diagnostic instrumentation for the F1/F2
     // permission mismatch. Remove this logger and every call site tagged
     // "ticket 04" once ticket 05 lands the real fix.
@@ -57,6 +53,10 @@ final class RealKeyTap: KeyTapControlling {
         subsystem: "com.ptlghost.BrightBoi",
         category: "ticket04-permissions"
     )
+
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
+    private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
 
     func startIntercepting(onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
         self.onKeyPress = onKeyPress
