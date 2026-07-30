@@ -82,11 +82,9 @@ swift test                       # run the test suite
 Packaging/build-app.sh release   # produce BrightBoi.app in .build/
 ```
 
-## Why it's free
+## Support
 
-BrightBoi exists because the author wanted this feature and didn't want to pay for it —
-paid alternatives (Vivid, Lunar) do more, but this covers the one thing that mattered.
-If it's useful to you too and you'd like to say thanks:
+If you find BrightBoi useful:
 
 <p align="center">
   <a href="https://buymeacoffee.com/ptlghost">
