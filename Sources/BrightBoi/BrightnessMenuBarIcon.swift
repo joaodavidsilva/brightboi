@@ -13,7 +13,9 @@ import SwiftUI
 ///
 /// `iconFillFraction` spans the full 0...200% range (`percentage / 200`, per
 /// ticket 03) — at Nominal 100% this reaches exactly half fill, at Boost
-/// 200% it reaches full.
+/// 200% it reaches full. On a non-XDR Mac (`supportsBoost == false`, ticket
+/// 02) the reachable range is only 0...100, so the controller divides by 100
+/// there instead — 100% still reads as a full icon, not half.
 ///
 /// Fill level alone doesn't satisfy spec item 3 (the icon must look visually
 /// distinct once Boosted, not just "more full") — menu bar icons can be

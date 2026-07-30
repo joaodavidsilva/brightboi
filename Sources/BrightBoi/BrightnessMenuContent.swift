@@ -18,7 +18,11 @@ struct BrightnessMenuContent: View {
                     get: { controller.currentState.percentage },
                     set: { controller.setPercentage($0) }
                 ),
-                in: BrightnessController.minimumPercentage...BrightnessController.maximumPercentage
+                in: BrightnessController.minimumPercentage...(
+                    controller.currentState.supportsBoost
+                        ? BrightnessController.maximumPercentage
+                        : BrightnessController.nominalCeilingPercentage
+                )
             )
 
             Text("\(Int(controller.currentState.percentage.rounded()))%")

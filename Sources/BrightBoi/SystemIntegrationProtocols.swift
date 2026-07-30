@@ -5,6 +5,12 @@ import Foundation
 /// this ticket only defines the seam.
 protocol DisplayBrightnessProviding {
     func apply(percentage: Double)
+
+    /// Whether this Mac's built-in display has the physical EDR headroom
+    /// Boost relies on (per ADR-0003) — `false` on non-XDR Macs (e.g.
+    /// MacBook Air), where Boost is a physical impossibility, not a
+    /// permissions or software gap.
+    func supportsExtendedBrightness() -> Bool
 }
 
 /// Disables macOS's native ambient-light-sensor-driven auto-brightness.

@@ -22,6 +22,7 @@ final class BrightnessController {
         var percentage: Double
         var isBoosted: Bool
         var iconFillFraction: Double
+        var supportsBoost: Bool
     }
 
     enum KeyPress {
@@ -39,6 +40,7 @@ final class BrightnessController {
 
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
+    private let supportsBoost: Bool
     private var pendingPersistWorkItem: DispatchWorkItem?
     private var terminationObserver: NSObjectProtocol?
 
@@ -59,8 +61,16 @@ final class BrightnessController {
         self.keyStepPercentage = keyStepPercentage
         self.persistenceDebounceInterval = persistenceDebounceInterval
 
-        let restoredPercentage = Self.clamp(persistence.loadPercentage() ?? Self.minimumPercentage)
-        self.currentState = Self.state(for: restoredPercentage)
+        // Session-start-only check, same one-shot pattern as the
+        // Auto-Brightness Takeover call below — Boost availability can't
+        // change mid-session, since it depends on the built-in display's
+        // fixed physical headroom.
+        let supportsBoost = displayBrightness.supportsExtendedBrightness()
+        self.supportsBoost = supportsBoost
+
+        let effectiveMaximum = Self.effectiveMaximum(supportsBoost: supportsBoost)
+        let restoredPercentage = Self.clamp(persistence.loadPercentage() ?? Self.minimumPercentage, to: effectiveMaximum)
+        self.currentState = Self.state(for: restoredPercentage, supportsBoost: supportsBoost)
         self.displayBrightness.apply(percentage: restoredPercentage)
 
         // Session-start-only effects: fired once here, never again per session.
@@ -89,8 +99,8 @@ final class BrightnessController {
     }
 
     func setPercentage(_ percentage: Double) {
-        let clamped = Self.clamp(percentage)
-        currentState = Self.state(for: clamped)
+        let clamped = Self.clamp(percentage, to: Self.effectiveMaximum(supportsBoost: supportsBoost))
+        currentState = Self.state(for: clamped, supportsBoost: supportsBoost)
         displayBrightness.apply(percentage: clamped)
         schedulePersist(clamped)
     }
@@ -117,15 +127,23 @@ final class BrightnessController {
         self.pendingPersistWorkItem = nil
     }
 
-    private static func clamp(_ percentage: Double) -> Double {
-        min(max(percentage, minimumPercentage), maximumPercentage)
+    /// On a non-XDR Mac, Nominal Brightness (0...100) is the entire reachable
+    /// range — Boost doesn't exist there, so both the clamp ceiling and the
+    /// icon's "full" mark move to 100 rather than staying pinned at 200.
+    private static func effectiveMaximum(supportsBoost: Bool) -> Double {
+        supportsBoost ? maximumPercentage : nominalCeilingPercentage
     }
 
-    private static func state(for percentage: Double) -> State {
+    private static func clamp(_ percentage: Double, to effectiveMaximum: Double) -> Double {
+        min(max(percentage, minimumPercentage), effectiveMaximum)
+    }
+
+    private static func state(for percentage: Double, supportsBoost: Bool) -> State {
         State(
             percentage: percentage,
             isBoosted: percentage > nominalCeilingPercentage,
-            iconFillFraction: percentage / maximumPercentage
+            iconFillFraction: percentage / effectiveMaximum(supportsBoost: supportsBoost),
+            supportsBoost: supportsBoost
         )
     }
 }

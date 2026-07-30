@@ -17,9 +17,11 @@ struct BrightnessControllerTests {
 
     private func makeFixture(
         storedPercentage: Double? = nil,
-        persistenceDebounceInterval: TimeInterval = 0.3
+        persistenceDebounceInterval: TimeInterval = 0.3,
+        supportsExtendedBrightness: Bool = true
     ) -> Fixture {
         let displayBrightness = FakeDisplayBrightnessProvider()
+        displayBrightness.stubbedSupportsExtendedBrightness = supportsExtendedBrightness
         let autoBrightnessToggle = FakeAutoBrightnessToggle()
         let loginItemService = FakeLoginItemService()
         let persistence = FakeBrightnessPersistence()
@@ -90,6 +92,33 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.iconFillFraction == 0.5)
 
         fixture.controller.setPercentage(200)
+        #expect(fixture.controller.currentState.iconFillFraction == 1)
+    }
+
+    // MARK: XDR/Boost availability
+
+    @Test("on a non-XDR Mac, setPercentage clamps to 100 and supportsBoost is false")
+    func nonXDRMacClampsToNominalCeiling() {
+        let fixture = makeFixture(supportsExtendedBrightness: false)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.currentState.percentage == 100)
+        #expect(fixture.controller.currentState.supportsBoost == false)
+        #expect(fixture.controller.currentState.isBoosted == false)
+    }
+
+    @Test("on an XDR Mac, today's 200% ceiling behavior is unchanged")
+    func xdrMacKeepsBoostCeiling() {
+        let fixture = makeFixture(supportsExtendedBrightness: true)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.currentState.percentage == 150)
+        #expect(fixture.controller.currentState.supportsBoost == true)
+        #expect(fixture.controller.currentState.isBoosted == true)
+    }
+
+    @Test("on a non-XDR Mac, the icon reads full at 100%, not half, since 100 is the entire reachable range")
+    func nonXDRMacIconFillsCompletelyAtOwnCeiling() {
+        let fixture = makeFixture(supportsExtendedBrightness: false)
+        fixture.controller.setPercentage(100)
         #expect(fixture.controller.currentState.iconFillFraction == 1)
     }
 

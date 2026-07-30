@@ -5,9 +5,14 @@
 
 final class FakeDisplayBrightnessProvider: DisplayBrightnessProviding {
     private(set) var appliedPercentages: [Double] = []
+    var stubbedSupportsExtendedBrightness = true
 
     func apply(percentage: Double) {
         appliedPercentages.append(percentage)
+    }
+
+    func supportsExtendedBrightness() -> Bool {
+        stubbedSupportsExtendedBrightness
     }
 }
 

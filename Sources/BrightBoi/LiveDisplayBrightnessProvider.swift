@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CoreGraphics
 
@@ -37,6 +38,18 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         let nominalPercentage = min(max(percentage, 0), BrightnessController.nominalCeilingPercentage)
         let value = Float(nominalPercentage / BrightnessController.nominalCeilingPercentage)
         _ = setBrightness(displayID, value)
+    }
+
+    /// Per ADR-0003: real EDR headroom (`maximumExtendedDynamicRangeColorComponentValue`
+    /// > 1.0) means Boost is physically available; ~1.0 means this Mac's
+    /// built-in display has no reserved headroom to exploit (e.g. MacBook
+    /// Air). No hardcoded Mac-model table.
+    func supportsExtendedBrightness() -> Bool {
+        let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
+        let builtInScreen = NSScreen.screens.first { screen in
+            (screen.deviceDescription[screenNumberKey] as? NSNumber)?.uint32Value == displayID
+        }
+        return (builtInScreen?.maximumExtendedDynamicRangeColorComponentValue ?? 1.0) > 1.0
     }
 
     private func applyBoost(percentage: Double) {
