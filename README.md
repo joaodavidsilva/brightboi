@@ -13,7 +13,7 @@
   <a href="https://github.com/joaodavidsilva/brightboi/releases/latest"><img src="https://img.shields.io/github/v/release/joaodavidsilva/brightboi?label=download&color=orange" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="Platform: macOS">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
-  <a href="https://buymeacoffee.com/ncgeshq"><img src="https://img.shields.io/badge/buy%20me%20a-coffee-ffdd00?logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
+  <a href="https://buymeacoffee.com/ptlghost"><img src="https://img.shields.io/badge/buy%20me%20a-coffee-ffdd00?logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
 </p>
 
 ---
@@ -89,7 +89,7 @@ paid alternatives (Vivid, Lunar) do more, but this covers the one thing that mat
 If it's useful to you too and you'd like to say thanks:
 
 <p align="center">
-  <a href="https://buymeacoffee.com/ncgeshq">
+  <a href="https://buymeacoffee.com/ptlghost">
     <img src="https://img.shields.io/badge/Buy%20me%20a-coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee">
   </a>
 </p>
