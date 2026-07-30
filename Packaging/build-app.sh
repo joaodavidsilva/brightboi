@@ -26,8 +26,10 @@ swift build -c "$CONFIGURATION" --package-path "$ROOT_DIR"
 
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/Resources"
 cp "$BUILD_DIR/BrightBoi" "$APP_DIR/Contents/MacOS/BrightBoi"
 cp "$ROOT_DIR/Packaging/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp "$ROOT_DIR/Packaging/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
     CODESIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application" | head -1 | sed -E 's/^[[:space:]]*[0-9]+\)[[:space:]]+([A-F0-9]+)[[:space:]].*/\1/' || true)"
