@@ -2,3 +2,10 @@
 .swiftpm/
 *.xcodeproj/xcuserdata/
 DerivedData/
+
+# Internal planning/process docs — not part of this repo
+/.scratch/
+/docs/adr/
+/docs/agents/
+/CONTEXT.md
+/CLAUDE.md

@@ -61,14 +61,14 @@ since the physical backlight headroom Boost relies on doesn't exist there.
 This is an early, actively-developed build — a few things aren't finished yet:
 
 - **F1/F2 physical brightness keys don't fully work yet.** Pressing them still shows macOS's
-  native brightness HUD instead of driving BrightBoi's 0–200% range — tracked as an open
-  permissions bug ([`.scratch/brightboi-refinements/issues/05-f1-f2-real-fix.md`](.scratch/brightboi-refinements/issues/05-f1-f2-real-fix.md)).
-  Use the menu bar slider in the meantime.
+  native brightness HUD instead of driving BrightBoi's 0–200% range. Use the menu bar slider in
+  the meantime.
 - **No in-app Quit button yet.** Quit via Activity Monitor (Force Quit) or `killall BrightBoi`
   until that ships.
 - **Not notarized.** Builds are currently ad-hoc signed rather than signed with a Developer ID
-  and notarized by Apple, per [ADR-0001](docs/adr/0001-private-apis-force-direct-distribution.md) —
-  hence the right-click-Open step above. This will change once proper signing is set up.
+  and notarized by Apple, since the app depends on private APIs the App Store disallows and a
+  direct-distribution pipeline is still being finalized — hence the right-click-Open step above.
+  This will change once proper signing is set up.
 
 ## Building from source
 
