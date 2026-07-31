@@ -17,6 +17,10 @@ struct BrightBoiApp: App {
     // holds the window alive until `OnboardingModel.onFinished` closes it.
     private let onboardingWindow: OnboardingWindowController?
 
+    // Shown on every launch, unconditionally — see ADR-0006 — so this is
+    // never optional the way `onboardingWindow` is.
+    private let donationWindow: DonationWindowController
+
     init() {
         let persistence = RealBrightnessPersistence()
         let controller = BrightnessController(
@@ -33,6 +37,7 @@ struct BrightBoiApp: App {
             hud.present(state: controller.currentState)
         }
         self.hud = hud
+        self.donationWindow = DonationWindowController()
         _controller = State(initialValue: controller)
 
         if OnboardingModel.shouldShow(persistence: persistence) {
@@ -41,11 +46,16 @@ struct BrightBoiApp: App {
                 permissionsChecker: RealPermissionsChecker()
             )
             let onboardingWindow = OnboardingWindowController(model: onboardingModel)
-            onboardingWindow.show()
             self.onboardingWindow = onboardingWindow
         } else {
             self.onboardingWindow = nil
         }
+
+        // Shown unconditionally, then onboarding (if present) shown last so
+        // it ends up on top — new users see the walkthrough before the
+        // donation ask.
+        donationWindow.show()
+        onboardingWindow?.show()
     }
 
     var body: some Scene {
