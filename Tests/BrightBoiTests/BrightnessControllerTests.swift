@@ -249,6 +249,33 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.percentage == 55)
     }
 
+    // MARK: onKeyPress notification (HUD hook)
+
+    @Test("onKeyPress fires with the press direction on every handled key press")
+    func onKeyPressFiresWithDirection() {
+        let fixture = makeFixture()
+        var received: [BrightnessController.KeyPress] = []
+        fixture.controller.onKeyPress = { received.append($0) }
+
+        fixture.controller.handleKeyPress(.raise)
+        fixture.controller.handleKeyPress(.lower)
+
+        #expect(received == [.raise, .lower])
+    }
+
+    @Test("onKeyPress still fires when the press clamps at a boundary and the percentage doesn't change")
+    func onKeyPressFiresEvenWhenClampedAtBoundary() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(200)
+        var receivedCount = 0
+        fixture.controller.onKeyPress = { _ in receivedCount += 1 }
+
+        fixture.controller.handleKeyPress(.raise)
+
+        #expect(fixture.controller.currentState.percentage == 200)
+        #expect(receivedCount == 1)
+    }
+
     // MARK: Persistence
 
     @Test("restores the persisted percentage on re-initialization, simulating relaunch")

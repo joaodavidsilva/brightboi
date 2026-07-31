@@ -46,6 +46,13 @@ final class BrightnessController {
 
     private(set) var currentState: State
 
+    /// Notified after every recognized key press is applied to `currentState`
+    /// — including a press that clamps at the 0%/200% ends and so leaves the
+    /// percentage unchanged. The HUD (ticket 03) hooks in here rather than
+    /// diffing `currentState`, since it must show/reset its dismiss timer on
+    /// the press itself, not on a percentage value that happens to differ.
+    var onKeyPress: ((KeyPress) -> Void)?
+
     private let displayBrightness: DisplayBrightnessProviding
     private let autoBrightnessToggle: AutoBrightnessToggling
     private let loginItemService: LoginItemRegistering
@@ -148,6 +155,7 @@ final class BrightnessController {
     func handleKeyPress(_ press: KeyPress) {
         let delta = press == .raise ? keyStepPercentage : -keyStepPercentage
         setPercentage(currentState.percentage + delta)
+        onKeyPress?(press)
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
