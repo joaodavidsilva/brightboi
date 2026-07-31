@@ -19,6 +19,17 @@ final class BrightnessController {
     static let nominalCeilingPercentage: Double = 100
     static let percentageGranularity: Double = 5
 
+    /// Absolute threshold on the 0...200 scale, not relative to a lowered
+    /// Boost Ceiling — if the ceiling is already below this, the battery
+    /// advisory simply never fires. See the spec's Battery advisory decision.
+    static let batteryAdvisoryThresholdPercentage: Double = 170
+
+    /// The thermal advisory's heuristic "delivered %" offsets — see
+    /// ADR-0005: not a measurement, just how far below the requested
+    /// percentage each thermal state is assumed to land.
+    static let thermalSeriousDeliveredOffset: Double = 20
+    static let thermalCriticalDeliveredOffset: Double = 40
+
     struct State: Equatable {
         var percentage: Double
         var isBoosted: Bool
@@ -44,6 +55,14 @@ final class BrightnessController {
         case lower
     }
 
+    /// The thermal-throttle advisory's content — see ADR-0005: `deliveredPercentage`
+    /// is a heuristic estimate (`.serious` → requested − 20, `.critical` →
+    /// requested − 40), never a measurement.
+    struct ThermalAdvisory: Equatable {
+        var requestedPercentage: Double
+        var deliveredPercentage: Double
+    }
+
     private(set) var currentState: State
 
     /// Notified after every recognized key press is applied to `currentState`
@@ -58,6 +77,8 @@ final class BrightnessController {
     private let loginItemService: LoginItemRegistering
     private let persistence: BrightnessPersisting
     private let keyTap: KeyTapControlling
+    private let powerSource: PowerSourceProviding
+    private let thermalState: ThermalStateProviding
 
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
@@ -74,6 +95,8 @@ final class BrightnessController {
         loginItemService: LoginItemRegistering,
         persistence: BrightnessPersisting,
         keyTap: KeyTapControlling,
+        powerSource: PowerSourceProviding,
+        thermalState: ThermalStateProviding,
         keyStepPercentage: Double = percentageGranularity,
         persistenceDebounceInterval: TimeInterval = 0.3
     ) {
@@ -82,6 +105,8 @@ final class BrightnessController {
         self.loginItemService = loginItemService
         self.persistence = persistence
         self.keyTap = keyTap
+        self.powerSource = powerSource
+        self.thermalState = thermalState
         self.keyStepPercentage = keyStepPercentage
         self.persistenceDebounceInterval = persistenceDebounceInterval
 
@@ -205,6 +230,31 @@ final class BrightnessController {
         currentState = updatedState(percentage: currentState.percentage)
         if keyRemapEnabled {
             startKeyTap(remap: shortcut)
+        }
+    }
+
+    /// Advisory only — never blocks or clamps the slider. Read fresh on every
+    /// access (not cached in `currentState`), since power-source state can
+    /// change without any brightness change to trigger a state rebuild.
+    var batteryAdvisoryVisible: Bool {
+        currentState.percentage > Self.batteryAdvisoryThresholdPercentage && powerSource.isOnBatteryPower()
+    }
+
+    /// `nil` unless boosted and the system is under thermal pressure.
+    /// Advisory only — never blocks or clamps the slider. Read fresh on every
+    /// access for the same reason as `batteryAdvisoryVisible` above.
+    var thermalAdvisory: ThermalAdvisory? {
+        guard currentState.isBoosted else { return nil }
+        let requested = currentState.percentage
+        switch thermalState.currentThermalState() {
+        case .serious:
+            return ThermalAdvisory(requestedPercentage: requested, deliveredPercentage: requested - Self.thermalSeriousDeliveredOffset)
+        case .critical:
+            return ThermalAdvisory(requestedPercentage: requested, deliveredPercentage: requested - Self.thermalCriticalDeliveredOffset)
+        case .nominal, .fair:
+            return nil
+        @unknown default:
+            return nil
         }
     }
 

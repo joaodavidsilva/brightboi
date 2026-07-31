@@ -13,6 +13,8 @@ struct BrightnessControllerTests {
         let loginItemService: FakeLoginItemService
         let persistence: FakeBrightnessPersistence
         let keyTap: FakeKeyTap
+        let powerSource: FakePowerSourceProvider
+        let thermalState: FakeThermalStateProvider
     }
 
     private func makeFixture(
@@ -22,7 +24,9 @@ struct BrightnessControllerTests {
         storedLaunchAtLoginEnabled: Bool? = nil,
         storedBoostCeiling: Double? = nil,
         storedKeyRemapEnabled: Bool? = nil,
-        storedKeyRemapShortcut: KeyRemapShortcut? = nil
+        storedKeyRemapShortcut: KeyRemapShortcut? = nil,
+        isOnBatteryPower: Bool = false,
+        stubbedThermalState: ProcessInfo.ThermalState = .nominal
     ) -> Fixture {
         let displayBrightness = FakeDisplayBrightnessProvider()
         displayBrightness.stubbedSupportsExtendedBrightness = supportsExtendedBrightness
@@ -35,6 +39,10 @@ struct BrightnessControllerTests {
         persistence.storedKeyRemapEnabled = storedKeyRemapEnabled
         persistence.storedKeyRemapShortcut = storedKeyRemapShortcut
         let keyTap = FakeKeyTap()
+        let powerSource = FakePowerSourceProvider()
+        powerSource.stubbedIsOnBatteryPower = isOnBatteryPower
+        let thermalState = FakeThermalStateProvider()
+        thermalState.stubbedThermalState = stubbedThermalState
 
         let controller = BrightnessController(
             displayBrightness: displayBrightness,
@@ -42,6 +50,8 @@ struct BrightnessControllerTests {
             loginItemService: loginItemService,
             persistence: persistence,
             keyTap: keyTap,
+            powerSource: powerSource,
+            thermalState: thermalState,
             persistenceDebounceInterval: persistenceDebounceInterval
         )
 
@@ -51,7 +61,9 @@ struct BrightnessControllerTests {
             autoBrightnessToggle: autoBrightnessToggle,
             loginItemService: loginItemService,
             persistence: persistence,
-            keyTap: keyTap
+            keyTap: keyTap,
+            powerSource: powerSource,
+            thermalState: thermalState
         )
     }
 
@@ -509,5 +521,73 @@ struct BrightnessControllerTests {
         #expect(fixture.keyTap.startCallCount == 0)
         #expect(fixture.controller.currentState.keyRemapShortcut == newShortcut)
         #expect(fixture.persistence.storedKeyRemapShortcut == newShortcut)
+    }
+
+    // MARK: Battery advisory
+
+    @Test("battery advisory fires above the 170% threshold while on battery power")
+    func batteryAdvisoryFiresAboveThresholdOnBattery() {
+        let fixture = makeFixture(isOnBatteryPower: true)
+        fixture.controller.setPercentage(175)
+        #expect(fixture.controller.batteryAdvisoryVisible == true)
+    }
+
+    @Test("battery advisory does not fire at exactly the 170% threshold")
+    func batteryAdvisoryDoesNotFireAtThreshold() {
+        let fixture = makeFixture(isOnBatteryPower: true)
+        fixture.controller.setPercentage(170)
+        #expect(fixture.controller.batteryAdvisoryVisible == false)
+    }
+
+    @Test("battery advisory does not fire above 170% while plugged into power")
+    func batteryAdvisoryDoesNotFireWhilePluggedIn() {
+        let fixture = makeFixture(isOnBatteryPower: false)
+        fixture.controller.setPercentage(180)
+        #expect(fixture.controller.batteryAdvisoryVisible == false)
+    }
+
+    @Test("battery advisory threshold is absolute, not relative to a lowered Boost Ceiling")
+    func batteryAdvisoryThresholdIsAbsolute() {
+        let fixture = makeFixture(storedBoostCeiling: 160, isOnBatteryPower: true)
+        fixture.controller.setPercentage(200)
+        #expect(fixture.controller.currentState.percentage == 160)
+        #expect(fixture.controller.batteryAdvisoryVisible == false)
+    }
+
+    // MARK: Thermal advisory
+
+    @Test("thermal advisory is nil when not boosted, regardless of thermal state")
+    func thermalAdvisoryNilWhenNotBoosted() {
+        let fixture = makeFixture(stubbedThermalState: .critical)
+        fixture.controller.setPercentage(50)
+        #expect(fixture.controller.thermalAdvisory == nil)
+    }
+
+    @Test("thermal advisory is nil when boosted but thermal state is nominal")
+    func thermalAdvisoryNilWhenNominal() {
+        let fixture = makeFixture(stubbedThermalState: .nominal)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.thermalAdvisory == nil)
+    }
+
+    @Test("thermal advisory is nil when boosted but thermal state is fair")
+    func thermalAdvisoryNilWhenFair() {
+        let fixture = makeFixture(stubbedThermalState: .fair)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.thermalAdvisory == nil)
+    }
+
+    @Test("thermal advisory fires when boosted and serious, delivered % is requested minus 20")
+    func thermalAdvisorySeriousHeuristic() {
+        let fixture = makeFixture(stubbedThermalState: .serious)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.thermalAdvisory == .init(requestedPercentage: 150, deliveredPercentage: 130))
+    }
+
+    @Test("thermal advisory fires when boosted and critical, delivered % is requested minus 40")
+    func thermalAdvisoryCriticalHeuristic() {
+        let fixture = makeFixture(stubbedThermalState: .critical)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.thermalAdvisory == .init(requestedPercentage: 150, deliveredPercentage: 110))
     }
 }

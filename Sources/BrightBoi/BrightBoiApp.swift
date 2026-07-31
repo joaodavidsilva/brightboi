@@ -24,7 +24,9 @@ struct BrightBoiApp: App {
             autoBrightnessToggle: RealAutoBrightnessToggle(),
             loginItemService: RealLoginItemService(),
             persistence: persistence,
-            keyTap: RealKeyTap()
+            keyTap: RealKeyTap(),
+            powerSource: RealPowerSourceProvider(),
+            thermalState: RealThermalStateProvider()
         )
         let hud = BrightnessHUDController()
         controller.onKeyPress = { [hud] _ in

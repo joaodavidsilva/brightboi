@@ -81,6 +81,23 @@ protocol KeyTapControlling {
     func stop()
 }
 
+/// Reports whether the Mac is currently running on battery power (not
+/// connected to a power adapter), wrapping IOKit's power source APIs. Backs
+/// the battery-cost advisory (ticket 05) — see the spec's Battery advisory
+/// decision.
+protocol PowerSourceProviding {
+    func isOnBatteryPower() -> Bool
+}
+
+/// Reports the system's current thermal pressure via `ProcessInfo`. Pulled
+/// out as its own seam so the thermal advisory's condition (ticket 05) is
+/// fake-able in tests instead of reading a live system value directly — see
+/// ADR-0005 for why the advisory it drives is a correlation, not a
+/// measurement.
+protocol ThermalStateProviding {
+    func currentThermalState() -> ProcessInfo.ThermalState
+}
+
 /// Reads current Accessibility/Input Monitoring permission status, and
 /// triggers macOS's own system prompt to request each one. Pulled out as its
 /// own seam so the Settings panel, `RealKeyTap` (status only), and onboarding

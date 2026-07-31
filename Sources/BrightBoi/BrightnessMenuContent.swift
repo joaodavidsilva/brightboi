@@ -44,6 +44,10 @@ struct BrightnessMenuContent: View {
 
             quickSetRow(state: state, palette: palette)
 
+            if controller.batteryAdvisoryVisible || controller.thermalAdvisory != nil {
+                advisories(palette: palette)
+            }
+
             Rectangle()
                 .fill(palette.divider)
                 .frame(height: 0.5)
@@ -133,6 +137,30 @@ struct BrightnessMenuContent: View {
                 )
         }
         .buttonStyle(.plain)
+    }
+
+    /// Both banners are advisory only — they never block or clamp the
+    /// slider, per the spec's Battery/Thermal advisory decisions. Mockups
+    /// 1g/2g.
+    private func advisories(palette: Palette) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if controller.batteryAdvisoryVisible {
+                AdvisoryBanner(
+                    icon: "bolt.slash.fill",
+                    // Generic copy, no time-remaining estimate — no battery
+                    // consumption model exists to make that number real.
+                    text: "Above \(Int(BrightnessController.batteryAdvisoryThresholdPercentage))% eats battery fast — you're not plugged in.",
+                    palette: palette
+                )
+            }
+            if let thermalAdvisory = controller.thermalAdvisory {
+                AdvisoryBanner(
+                    icon: "thermometer.high",
+                    text: "Running hot — delivering closer to \(Int(thermalAdvisory.deliveredPercentage.rounded()))% than the \(Int(thermalAdvisory.requestedPercentage.rounded()))% requested.",
+                    palette: palette
+                )
+            }
+        }
     }
 
     private func actionsList(palette: Palette) -> some View {
@@ -251,6 +279,28 @@ private struct BoostSlider: View {
     }
 }
 
+/// A single advisory row — battery-cost or thermal-throttle — matching
+/// mockups 1g/2g. Purely informational: no action, no dismiss control.
+private struct AdvisoryBanner: View {
+    var icon: String
+    var text: String
+    var palette: BrightnessMenuContent.Palette
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(palette.advisoryIcon)
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundStyle(palette.advisoryText)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(palette.advisoryBackground, in: RoundedRectangle(cornerRadius: 7))
+    }
+}
+
 /// Repeating diagonal lines, matching the mockups' `repeating-linear-gradient`
 /// stripe hint drawn over the not-yet-reached boost zone.
 private struct DiagonalStripes: Shape {
@@ -291,6 +341,9 @@ extension BrightnessMenuContent {
         let rowText: Color
         let rowShortcutText: Color
         let divider: Color
+        let advisoryBackground: Color
+        let advisoryText: Color
+        let advisoryIcon: Color
 
         init(colorScheme: ColorScheme) {
             switch colorScheme {
@@ -316,6 +369,9 @@ extension BrightnessMenuContent {
                 rowText = Color.white.opacity(0.9)
                 rowShortcutText = Color.white.opacity(0.35)
                 divider = Color.white.opacity(0.12)
+                advisoryBackground = Color(red: 1.0, green: 0.624, blue: 0.039).opacity(0.14)
+                advisoryText = Color.white.opacity(0.85)
+                advisoryIcon = Color(red: 1.0, green: 0.722, blue: 0.302)
             case .light:
                 fallthrough
             @unknown default:
@@ -340,6 +396,9 @@ extension BrightnessMenuContent {
                 rowText = Color(red: 0.114, green: 0.114, blue: 0.122)
                 rowShortcutText = Color.black.opacity(0.35)
                 divider = Color.black.opacity(0.1)
+                advisoryBackground = Color(red: 0.941, green: 0.549, blue: 0.0).opacity(0.12)
+                advisoryText = Color(red: 0.114, green: 0.114, blue: 0.122).opacity(0.85)
+                advisoryIcon = Color(red: 0.725, green: 0.416, blue: 0.0)
             }
         }
     }

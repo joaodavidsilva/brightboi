@@ -1,3 +1,4 @@
+import Foundation
 @testable import BrightBoi
 
 /// Fakes for `BrightnessController`'s system-facing protocols. Used
@@ -117,6 +118,22 @@ final class FakeKeyTap: KeyTapControlling {
     /// callback path `RealKeyTap` drives in production.
     func simulateKeyPress(_ press: BrightnessController.KeyPress) {
         onKeyPress?(press)
+    }
+}
+
+final class FakePowerSourceProvider: PowerSourceProviding {
+    var stubbedIsOnBatteryPower = false
+
+    func isOnBatteryPower() -> Bool {
+        stubbedIsOnBatteryPower
+    }
+}
+
+final class FakeThermalStateProvider: ThermalStateProviding {
+    var stubbedThermalState: ProcessInfo.ThermalState = .nominal
+
+    func currentThermalState() -> ProcessInfo.ThermalState {
+        stubbedThermalState
     }
 }
 
