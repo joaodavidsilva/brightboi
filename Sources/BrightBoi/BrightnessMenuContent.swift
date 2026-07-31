@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The dropdown shown when the menu bar icon is clicked: one continuous
@@ -38,6 +39,10 @@ struct BrightnessMenuContent: View {
                 )
             )
             .toggleStyle(.checkbox)
+
+            Button("Quit BrightBoi") {
+                NSApplication.shared.terminate(nil)
+            }
         }
         .padding()
         .frame(width: 220)
