@@ -25,6 +25,10 @@ final class BrightnessController {
         var iconFillFraction: Double
         var supportsBoost: Bool
         var launchAtLoginEnabled: Bool
+
+        /// 5 nits per percentage point — 100% is the old 500-nit Nominal
+        /// ceiling, 200% is the 1000-nit Boost ceiling, per ADR-0002.
+        var nits: Double { percentage * 5 }
     }
 
     enum KeyPress {
@@ -147,7 +151,11 @@ final class BrightnessController {
     /// On a non-XDR Mac, Nominal Brightness (0...100) is the entire reachable
     /// range — Boost doesn't exist there, so both the clamp ceiling and the
     /// icon's "full" mark move to 100 rather than staying pinned at 200.
-    private static func effectiveMaximum(supportsBoost: Bool) -> Double {
+    /// Not `private` — the popover's quick-set row and custom slider (ticket
+    /// 01) need the same rule to compute "Max boi" and the track's fill
+    /// fraction, and having three independent copies of this ternary was a
+    /// real duplication risk once ticket 02 makes the ceiling configurable.
+    static func effectiveMaximum(supportsBoost: Bool) -> Double {
         supportsBoost ? maximumPercentage : nominalCeilingPercentage
     }
 

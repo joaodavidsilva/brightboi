@@ -2,8 +2,9 @@ import SwiftUI
 
 /// The menu bar label: a sun glyph that fills from the bottom in proportion
 /// to `BrightnessController.State.iconFillFraction`, so it visibly tracks
-/// the slider live, plus a live percentage readout next to it (ticket 08)
-/// reading `currentState.percentage` directly — no new controller state.
+/// the slider live. No inline percentage text — the redesigned popover is
+/// where the exact number lives now, so the menu bar itself stays visually
+/// quiet (ticket 01).
 ///
 /// Empirically verified (throwaway `ImageRenderer` probe, not shipped) that
 /// SF Symbols' `Image(systemName:variableValue:)` renders byte-identical
@@ -30,29 +31,24 @@ struct BrightnessMenuBarIcon: View {
     var controller: BrightnessController
 
     var body: some View {
-        HStack(spacing: 2) {
-            ZStack {
-                Image(systemName: "sun.max")
-                    .opacity(0.35)
-                Image(systemName: "sun.max.fill")
-                    .mask(alignment: .bottom) {
-                        GeometryReader { proxy in
-                            Rectangle()
-                                .frame(height: proxy.size.height * controller.currentState.iconFillFraction)
-                                .frame(maxHeight: .infinity, alignment: .bottom)
-                        }
+        ZStack {
+            Image(systemName: "sun.max")
+                .opacity(0.35)
+            Image(systemName: "sun.max.fill")
+                .mask(alignment: .bottom) {
+                    GeometryReader { proxy in
+                        Rectangle()
+                            .frame(height: proxy.size.height * controller.currentState.iconFillFraction)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
                     }
-            }
-            .overlay(alignment: .topTrailing) {
-                if controller.currentState.isBoosted {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 8))
-                        .offset(x: 5, y: -3)
                 }
+        }
+        .overlay(alignment: .topTrailing) {
+            if controller.currentState.isBoosted {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 8))
+                    .offset(x: 5, y: -3)
             }
-
-            Text("\(Int(controller.currentState.percentage.rounded()))%")
-                .monospacedDigit()
         }
     }
 }
