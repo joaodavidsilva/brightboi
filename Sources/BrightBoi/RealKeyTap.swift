@@ -43,21 +43,14 @@ final class RealKeyTap: KeyTapControlling {
     // rather than some other system-defined event.
     private static let auxControlButtonsSubtype: Int16 = 8
 
-    private let permissionsChecker: PermissionsChecking
-
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var remap: KeyRemapShortcut?
     private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
 
-    init(permissionsChecker: PermissionsChecking = RealPermissionsChecker()) {
-        self.permissionsChecker = permissionsChecker
-    }
-
     func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
         self.remap = remap
         self.onKeyPress = onKeyPress
-        requestPermissionsIfNeeded()
 
         if let eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: true)
@@ -78,49 +71,6 @@ final class RealKeyTap: KeyTapControlling {
         }
         eventTap = nil
         runLoopSource = nil
-    }
-
-    // MARK: - Permissions
-
-    /// Both Input Monitoring (raw HID/media-key event access) and
-    /// Accessibility (needed for a tap that can consume, not just observe,
-    /// key events) gate this feature per the spec's Further Notes. Each is
-    /// only ever unrequested once — after the user answers macOS's system
-    /// prompt, the permissions checker reflects that answer on every future
-    /// call, so this explanation alert naturally shows only on first run.
-    private func requestPermissionsIfNeeded() {
-        let needsAccessibility = !permissionsChecker.accessibilityGranted()
-        let needsInputMonitoring = !permissionsChecker.inputMonitoringGranted()
-
-        guard needsAccessibility || needsInputMonitoring else { return }
-
-        presentPermissionExplanationAlert()
-
-        if needsAccessibility {
-            // Referenced by its raw key name rather than the
-            // `kAXTrustedCheckOptionPrompt` global: that `Unmanaged<CFString>`
-            // constant fails Swift 6 strict-concurrency checking as
-            // shared mutable global state, and the key name itself is a
-            // stable, documented part of the `AXIsProcessTrustedWithOptions` API.
-            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
-        }
-        if needsInputMonitoring {
-            _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-        }
-    }
-
-    private func presentPermissionExplanationAlert() {
-        let alert = NSAlert()
-        alert.messageText = "BrightBoi needs Accessibility and Input Monitoring access"
-        alert.informativeText = """
-        BrightBoi remaps its configured brightness keys to control its full \
-        0–200% range instead of macOS's default 0–100% range. To intercept \
-        those key presses system-wide, macOS requires Accessibility and Input \
-        Monitoring permission, which you'll be asked to grant next.
-        """
-        alert.addButton(withTitle: "Continue")
-        alert.runModal()
     }
 
     // MARK: - Event tap

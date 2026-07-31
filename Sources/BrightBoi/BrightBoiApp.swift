@@ -13,12 +13,17 @@ struct BrightBoiApp: App {
     // to `controller.onKeyPress` (ticket 03).
     private let hud: BrightnessHUDController
 
+    // Non-nil only for the one launch where onboarding is actually shown;
+    // holds the window alive until `OnboardingModel.onFinished` closes it.
+    private let onboardingWindow: OnboardingWindowController?
+
     init() {
+        let persistence = RealBrightnessPersistence()
         let controller = BrightnessController(
             displayBrightness: LiveDisplayBrightnessProvider(),
             autoBrightnessToggle: RealAutoBrightnessToggle(),
             loginItemService: RealLoginItemService(),
-            persistence: RealBrightnessPersistence(),
+            persistence: persistence,
             keyTap: RealKeyTap()
         )
         let hud = BrightnessHUDController()
@@ -27,6 +32,18 @@ struct BrightBoiApp: App {
         }
         self.hud = hud
         _controller = State(initialValue: controller)
+
+        if OnboardingModel.shouldShow(persistence: persistence) {
+            let onboardingModel = OnboardingModel(
+                persistence: persistence,
+                permissionsChecker: RealPermissionsChecker()
+            )
+            let onboardingWindow = OnboardingWindowController(model: onboardingModel)
+            onboardingWindow.show()
+            self.onboardingWindow = onboardingWindow
+        } else {
+            self.onboardingWindow = nil
+        }
     }
 
     var body: some Scene {

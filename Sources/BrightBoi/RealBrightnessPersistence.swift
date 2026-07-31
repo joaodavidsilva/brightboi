@@ -10,6 +10,7 @@ final class RealBrightnessPersistence: BrightnessPersisting {
     private static let boostCeilingKey = "com.ptlghost.BrightBoi.boostCeiling"
     private static let keyRemapShortcutKey = "com.ptlghost.BrightBoi.keyRemapShortcut"
     private static let keyRemapEnabledKey = "com.ptlghost.BrightBoi.keyRemapEnabled"
+    private static let hasCompletedOnboardingKey = "com.ptlghost.BrightBoi.hasCompletedOnboarding"
 
     private let defaults: UserDefaults
 
@@ -74,5 +75,15 @@ final class RealBrightnessPersistence: BrightnessPersisting {
 
     func loadKeyRemapEnabled() -> Bool? {
         defaults.object(forKey: Self.keyRemapEnabledKey) as? Bool
+    }
+
+    func save(hasCompletedOnboarding: Bool) {
+        defaults.set(hasCompletedOnboarding, forKey: Self.hasCompletedOnboardingKey)
+    }
+
+    /// `nil` on a fresh install — `OnboardingModel` treats that as `false`,
+    /// the same "never persisted yet" convention every other flag here uses.
+    func loadHasCompletedOnboarding() -> Bool? {
+        defaults.object(forKey: Self.hasCompletedOnboardingKey) as? Bool
     }
 }

@@ -44,6 +44,7 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
     var storedBoostCeiling: Double?
     var storedKeyRemapShortcut: KeyRemapShortcut?
     var storedKeyRemapEnabled: Bool?
+    var storedHasCompletedOnboarding: Bool?
 
     func save(percentage: Double) {
         savedPercentages.append(percentage)
@@ -85,6 +86,14 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
     func loadKeyRemapEnabled() -> Bool? {
         storedKeyRemapEnabled
     }
+
+    func save(hasCompletedOnboarding: Bool) {
+        storedHasCompletedOnboarding = hasCompletedOnboarding
+    }
+
+    func loadHasCompletedOnboarding() -> Bool? {
+        storedHasCompletedOnboarding
+    }
 }
 
 final class FakeKeyTap: KeyTapControlling {
@@ -116,6 +125,8 @@ final class FakePermissionsChecker: PermissionsChecking {
     var stubbedInputMonitoringGranted = true
     private(set) var accessibilityQueryCount = 0
     private(set) var inputMonitoringQueryCount = 0
+    private(set) var requestAccessibilityCallCount = 0
+    private(set) var requestInputMonitoringCallCount = 0
 
     func accessibilityGranted() -> Bool {
         accessibilityQueryCount += 1
@@ -125,5 +136,17 @@ final class FakePermissionsChecker: PermissionsChecking {
     func inputMonitoringGranted() -> Bool {
         inputMonitoringQueryCount += 1
         return stubbedInputMonitoringGranted
+    }
+
+    /// Records the call only — doesn't flip `stubbed...Granted`, since a real
+    /// system prompt's outcome is asynchronous and user-driven. Tests that
+    /// need a post-request "now granted" status set `stubbed...Granted`
+    /// directly before reading it.
+    func requestAccessibility() {
+        requestAccessibilityCallCount += 1
+    }
+
+    func requestInputMonitoring() {
+        requestInputMonitoringCallCount += 1
     }
 }

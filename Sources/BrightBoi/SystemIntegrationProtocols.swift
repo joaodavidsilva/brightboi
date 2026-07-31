@@ -59,6 +59,12 @@ protocol BrightnessPersisting {
     /// always has, until the user turns it off.
     func save(keyRemapEnabled: Bool)
     func loadKeyRemapEnabled() -> Bool?
+
+    /// `nil` on a fresh install, which `OnboardingModel` treats as `false` —
+    /// onboarding hasn't been shown yet. Set on completion *or* skip, never
+    /// on any other path, so it never re-shows once either is chosen.
+    func save(hasCompletedOnboarding: Bool)
+    func loadHasCompletedOnboarding() -> Bool?
 }
 
 /// Starts/stops the system-wide Key Remap tap. `RealKeyTap` supplies the real
@@ -75,11 +81,17 @@ protocol KeyTapControlling {
     func stop()
 }
 
-/// Reads current Accessibility/Input Monitoring permission status, without
-/// requesting it. Pulled out as its own seam so both the Settings panel and
-/// `RealKeyTap` can read the same live status without duplicating the raw
-/// `AXIsProcessTrusted`/`IOHIDCheckAccess` calls.
+/// Reads current Accessibility/Input Monitoring permission status, and
+/// triggers macOS's own system prompt to request each one. Pulled out as its
+/// own seam so the Settings panel, `RealKeyTap` (status only), and onboarding
+/// (status + requesting) can all read/drive the same two permissions without
+/// duplicating the raw `AXIsProcessTrusted`/`IOHIDCheckAccess`/
+/// `AXIsProcessTrustedWithOptions`/`IOHIDRequestAccess` calls. Onboarding
+/// (ticket 04) is the only caller of the two `request` methods — it replaced
+/// `RealKeyTap`'s previous blocking-alert-then-request flow entirely.
 protocol PermissionsChecking {
     func accessibilityGranted() -> Bool
     func inputMonitoringGranted() -> Bool
+    func requestAccessibility()
+    func requestInputMonitoring()
 }
