@@ -19,7 +19,10 @@ struct BrightnessControllerTests {
         storedPercentage: Double? = nil,
         persistenceDebounceInterval: TimeInterval = 0.3,
         supportsExtendedBrightness: Bool = true,
-        storedLaunchAtLoginEnabled: Bool? = nil
+        storedLaunchAtLoginEnabled: Bool? = nil,
+        storedBoostCeiling: Double? = nil,
+        storedKeyRemapEnabled: Bool? = nil,
+        storedKeyRemapShortcut: KeyRemapShortcut? = nil
     ) -> Fixture {
         let displayBrightness = FakeDisplayBrightnessProvider()
         displayBrightness.stubbedSupportsExtendedBrightness = supportsExtendedBrightness
@@ -28,6 +31,9 @@ struct BrightnessControllerTests {
         let persistence = FakeBrightnessPersistence()
         persistence.storedPercentage = storedPercentage
         persistence.storedLaunchAtLoginEnabled = storedLaunchAtLoginEnabled
+        persistence.storedBoostCeiling = storedBoostCeiling
+        persistence.storedKeyRemapEnabled = storedKeyRemapEnabled
+        persistence.storedKeyRemapShortcut = storedKeyRemapShortcut
         let keyTap = FakeKeyTap()
 
         let controller = BrightnessController(
@@ -323,5 +329,158 @@ struct BrightnessControllerTests {
         #expect(fixture.loginItemService.registerCallCount == 1)
         #expect(fixture.persistence.storedLaunchAtLoginEnabled == true)
         #expect(fixture.controller.currentState.launchAtLoginEnabled == true)
+    }
+
+    // MARK: Boost Ceiling
+
+    @Test("with nothing persisted, the Boost Ceiling defaults to 200%, matching today's fixed behavior")
+    func boostCeilingDefaultsToOriginalCeiling() {
+        let fixture = makeFixture()
+        #expect(fixture.controller.currentState.boostCeiling == 200)
+    }
+
+    @Test("restores a persisted Boost Ceiling on init")
+    func restoresPersistedBoostCeiling() {
+        let fixture = makeFixture(storedBoostCeiling: 150)
+        #expect(fixture.controller.currentState.boostCeiling == 150)
+    }
+
+    @Test("setBoostCeiling never goes below 100%")
+    func setBoostCeilingClampsToFloor() {
+        let fixture = makeFixture()
+        fixture.controller.setBoostCeiling(50)
+        #expect(fixture.controller.currentState.boostCeiling == 100)
+    }
+
+    @Test("setBoostCeiling never goes above 200%")
+    func setBoostCeilingClampsToCeiling() {
+        let fixture = makeFixture()
+        fixture.controller.setBoostCeiling(250)
+        #expect(fixture.controller.currentState.boostCeiling == 200)
+    }
+
+    @Test("lowering the Boost Ceiling below the current live brightness clamps brightness down immediately")
+    func loweringBoostCeilingClampsBrightnessDown() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(180)
+        fixture.controller.setBoostCeiling(120)
+        #expect(fixture.controller.currentState.percentage == 120)
+        #expect(fixture.controller.currentState.boostCeiling == 120)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 120)
+    }
+
+    @Test("raising the Boost Ceiling doesn't touch the current brightness")
+    func raisingBoostCeilingLeavesBrightnessUntouched() {
+        let fixture = makeFixture(storedBoostCeiling: 150)
+        fixture.controller.setPercentage(140)
+        fixture.controller.setBoostCeiling(200)
+        #expect(fixture.controller.currentState.percentage == 140)
+    }
+
+    @Test("leaving the Boost Ceiling untouched preserves today's exact 200%-ceiling behavior")
+    func untouchedBoostCeilingKeepsOriginalCeilingBehavior() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(250)
+        #expect(fixture.controller.currentState.percentage == 200)
+        #expect(fixture.controller.currentState.boostCeiling == 200)
+    }
+
+    @Test("a lowered Boost Ceiling clamps setPercentage/key presses, not just the ceiling change itself")
+    func loweredBoostCeilingClampsSubsequentChanges() {
+        let fixture = makeFixture()
+        fixture.controller.setBoostCeiling(110)
+        fixture.controller.setPercentage(180)
+        #expect(fixture.controller.currentState.percentage == 110)
+
+        fixture.controller.handleKeyPress(.raise)
+        #expect(fixture.controller.currentState.percentage == 110)
+    }
+
+    // MARK: Key Remap — persistence and defaults
+
+    @Test("with nothing persisted, Key Remap defaults to enabled with the F1/F2 shortcut, matching today's behavior")
+    func keyRemapDefaultsMatchOriginalBehavior() {
+        let fixture = makeFixture()
+        #expect(fixture.controller.currentState.keyRemapEnabled == true)
+        #expect(fixture.controller.currentState.keyRemapShortcut == .defaultShortcut)
+        #expect(fixture.keyTap.startCallCount == 1)
+        #expect(fixture.keyTap.lastStartedRemap == .defaultShortcut)
+    }
+
+    @Test("restores a persisted Key Remap shortcut and enabled flag on init")
+    func restoresPersistedKeyRemap() {
+        let customShortcut = KeyRemapShortcut(
+            raise: KeyCombo(modifiers: [.option, .shift], keyCode: 0x1E),
+            lower: KeyCombo(modifiers: [.option, .shift], keyCode: 0x21)
+        )
+        let fixture = makeFixture(storedKeyRemapEnabled: false, storedKeyRemapShortcut: customShortcut)
+        #expect(fixture.controller.currentState.keyRemapEnabled == false)
+        #expect(fixture.controller.currentState.keyRemapShortcut == customShortcut)
+        // Disabled at init, so the tap should never have been started.
+        #expect(fixture.keyTap.startCallCount == 0)
+    }
+
+    // MARK: Key Remap — on/off toggle
+
+    @Test("the on/off toggle drives exactly one stop/start pair on the key tap")
+    func keyRemapToggleDrivesOneStopStartPair() {
+        let fixture = makeFixture()
+        #expect(fixture.keyTap.startCallCount == 1)
+        #expect(fixture.keyTap.stopCallCount == 0)
+
+        fixture.controller.setKeyRemapEnabled(false)
+        #expect(fixture.keyTap.stopCallCount == 1)
+        #expect(fixture.controller.currentState.keyRemapEnabled == false)
+
+        fixture.controller.setKeyRemapEnabled(true)
+        #expect(fixture.keyTap.startCallCount == 2)
+        #expect(fixture.controller.currentState.keyRemapEnabled == true)
+    }
+
+    @Test("disabling the Key Remap stops key presses from driving the controller")
+    func disablingKeyRemapStopsPressesFromDrivingController() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        fixture.controller.setKeyRemapEnabled(false)
+        fixture.keyTap.simulateKeyPress(.raise)
+        #expect(fixture.controller.currentState.percentage == 50)
+    }
+
+    @Test("re-enabling the Key Remap lets key presses drive the controller again")
+    func reenablingKeyRemapRestoresPresses() {
+        let fixture = makeFixture()
+        fixture.controller.setKeyRemapEnabled(false)
+        fixture.controller.setKeyRemapEnabled(true)
+        fixture.controller.setPercentage(50)
+        fixture.keyTap.simulateKeyPress(.raise)
+        #expect(fixture.controller.currentState.percentage == 55)
+    }
+
+    // MARK: Key Remap — reconfiguring the shortcut
+
+    @Test("changing the Key Remap shortcut restarts the tap with the new combo, when enabled")
+    func changingShortcutRestartsTapWhenEnabled() {
+        let fixture = makeFixture()
+        let newShortcut = KeyRemapShortcut(
+            raise: KeyCombo(modifiers: [.option, .shift], keyCode: 0x1E),
+            lower: KeyCombo(modifiers: [.option, .shift], keyCode: 0x21)
+        )
+        fixture.controller.setKeyRemapShortcut(newShortcut)
+        #expect(fixture.controller.currentState.keyRemapShortcut == newShortcut)
+        #expect(fixture.keyTap.lastStartedRemap == newShortcut)
+        #expect(fixture.keyTap.startCallCount == 2)
+    }
+
+    @Test("changing the Key Remap shortcut while disabled persists it without starting the tap")
+    func changingShortcutWhileDisabledDoesNotStartTap() {
+        let fixture = makeFixture(storedKeyRemapEnabled: false)
+        let newShortcut = KeyRemapShortcut(
+            raise: KeyCombo(modifiers: [.command], keyCode: 0x00),
+            lower: KeyCombo(modifiers: [.command], keyCode: 0x01)
+        )
+        fixture.controller.setKeyRemapShortcut(newShortcut)
+        #expect(fixture.keyTap.startCallCount == 0)
+        #expect(fixture.controller.currentState.keyRemapShortcut == newShortcut)
+        #expect(fixture.persistence.storedKeyRemapShortcut == newShortcut)
     }
 }

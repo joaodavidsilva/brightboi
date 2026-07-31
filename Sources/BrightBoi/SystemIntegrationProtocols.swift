@@ -41,12 +41,45 @@ protocol BrightnessPersisting {
     /// today's unconditional registration behavior for upgrading users.
     func save(launchAtLoginEnabled: Bool)
     func loadLaunchAtLoginEnabled() -> Bool?
+
+    /// `nil` on a fresh install, which `BrightnessController` treats as
+    /// defaulting to `maximumPercentage` (200%) — identical to today's fixed
+    /// behavior until the user deliberately lowers it. See ADR-0004.
+    func save(boostCeiling: Double)
+    func loadBoostCeiling() -> Double?
+
+    /// `nil` on a fresh install, which `BrightnessController` treats as
+    /// defaulting to `.defaultShortcut` (F1/F2), matching today's behavior
+    /// with no migration needed for existing users.
+    func save(keyRemapShortcut: KeyRemapShortcut)
+    func loadKeyRemapShortcut() -> KeyRemapShortcut?
+
+    /// `nil` on a fresh install, which `BrightnessController` treats as
+    /// defaulting to `true` — the tap starts intercepting the same as it
+    /// always has, until the user turns it off.
+    func save(keyRemapEnabled: Bool)
+    func loadKeyRemapEnabled() -> Bool?
 }
 
-/// Starts the system-wide F1/F2 key tap. Ticket 07 supplies the real
+/// Starts/stops the system-wide Key Remap tap. `RealKeyTap` supplies the real
 /// `CGEventTap`-backed implementation. `onKeyPress` is how the tap reports
 /// each intercepted press back to `BrightnessController` — the tap itself
 /// has no reference to the controller.
+///
+/// `start` may be called again while already running, to switch to a new
+/// `remap` live (e.g. the Settings shortcut recorder) without an explicit
+/// `stop` first. `stop` fully releases the tap — the configured keys return
+/// to native macOS handling — used by the "Let BrightBoi own …" toggle.
 protocol KeyTapControlling {
-    func startIntercepting(onKeyPress: @escaping (BrightnessController.KeyPress) -> Void)
+    func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Void)
+    func stop()
+}
+
+/// Reads current Accessibility/Input Monitoring permission status, without
+/// requesting it. Pulled out as its own seam so both the Settings panel and
+/// `RealKeyTap` can read the same live status without duplicating the raw
+/// `AXIsProcessTrusted`/`IOHIDCheckAccess` calls.
+protocol PermissionsChecking {
+    func accessibilityGranted() -> Bool
+    func inputMonitoringGranted() -> Bool
 }

@@ -10,6 +10,10 @@ struct BrightBoiApp: App {
         keyTap: RealKeyTap()
     )
 
+    // Captured once at app startup, per the spec's Permissions panel
+    // decision (no polling, no refresh-on-window-focus).
+    @State private var permissions = PermissionsSnapshot(checker: RealPermissionsChecker())
+
     var body: some Scene {
         MenuBarExtra {
             BrightnessMenuContent(controller: controller)
@@ -18,12 +22,8 @@ struct BrightBoiApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // Placeholder scene so the popover's "Settings…" row has somewhere
-        // to `SettingsLink` to — real content (Boost Ceiling, Key Remap,
-        // Permissions panel) lands in ticket 02.
         Settings {
-            Text("Settings coming soon.")
-                .padding(40)
+            SettingsView(controller: controller, permissions: permissions)
         }
     }
 }

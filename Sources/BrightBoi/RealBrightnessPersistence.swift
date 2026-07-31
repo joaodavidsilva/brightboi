@@ -7,6 +7,9 @@ import Foundation
 final class RealBrightnessPersistence: BrightnessPersisting {
     private static let percentageKey = "com.ptlghost.BrightBoi.percentage"
     private static let launchAtLoginEnabledKey = "com.ptlghost.BrightBoi.launchAtLoginEnabled"
+    private static let boostCeilingKey = "com.ptlghost.BrightBoi.boostCeiling"
+    private static let keyRemapShortcutKey = "com.ptlghost.BrightBoi.keyRemapShortcut"
+    private static let keyRemapEnabledKey = "com.ptlghost.BrightBoi.keyRemapEnabled"
 
     private let defaults: UserDefaults
 
@@ -41,5 +44,35 @@ final class RealBrightnessPersistence: BrightnessPersisting {
     /// unconditional registration behavior for upgrading users.
     func loadLaunchAtLoginEnabled() -> Bool? {
         defaults.object(forKey: Self.launchAtLoginEnabledKey) as? Bool
+    }
+
+    func save(boostCeiling: Double) {
+        defaults.set(boostCeiling, forKey: Self.boostCeilingKey)
+    }
+
+    /// `nil` on a fresh install — `BrightnessController` treats that as
+    /// defaulting to `maximumPercentage`, unlike `loadPercentage`'s
+    /// safety-motivated fallback: an unset Boost Ceiling isn't a "could
+    /// blank the screen" concern, just an ordinary preference default.
+    func loadBoostCeiling() -> Double? {
+        defaults.object(forKey: Self.boostCeilingKey) as? Double
+    }
+
+    func save(keyRemapShortcut: KeyRemapShortcut) {
+        guard let data = try? JSONEncoder().encode(keyRemapShortcut) else { return }
+        defaults.set(data, forKey: Self.keyRemapShortcutKey)
+    }
+
+    func loadKeyRemapShortcut() -> KeyRemapShortcut? {
+        guard let data = defaults.data(forKey: Self.keyRemapShortcutKey) else { return nil }
+        return try? JSONDecoder().decode(KeyRemapShortcut.self, from: data)
+    }
+
+    func save(keyRemapEnabled: Bool) {
+        defaults.set(keyRemapEnabled, forKey: Self.keyRemapEnabledKey)
+    }
+
+    func loadKeyRemapEnabled() -> Bool? {
+        defaults.object(forKey: Self.keyRemapEnabledKey) as? Bool
     }
 }

@@ -4,8 +4,8 @@ import Foundation
 import IOKit.hid
 
 /// Real `KeyTapControlling`: a session-level `CGEventTap` that intercepts the
-/// physical F1/F2 brightness keys system-wide, in both the forms a Mac
-/// keyboard can send them —
+/// configured Key Remap combo system-wide. The default F1/F2 combo arrives in
+/// two different forms a Mac keyboard can send it —
 ///
 /// - Pressed alone, they arrive as `NX_SYSDEFINED` events (macOS's own
 ///   "media key" mechanism), not ordinary key events.
@@ -13,17 +13,15 @@ import IOKit.hid
 ///   virtual keycodes, since Fn inverts the keyboard's default media-key
 ///   behavior.
 ///
+/// Any other configured combo (which per ADR-0007 always carries at least
+/// one modifier) only ever arrives as an ordinary `keyDown` event with
+/// matching modifier flags — it has no media-key form.
+///
 /// Registered with `.defaultTap` (not `.listenOnly`) and returns `nil` for
-/// every brightness key event it recognizes, which is what actually
-/// supersedes macOS's native handling — a listen-only tap would still let
-/// the OS apply its own Nominal-range adjustment underneath BrightBoi's.
+/// every recognized combo, which is what actually supersedes macOS's native
+/// handling — a listen-only tap would still let the OS apply its own
+/// Nominal-range adjustment underneath BrightBoi's.
 final class RealKeyTap: KeyTapControlling {
-    // Standard virtual keycodes for the F1/F2 function keys (Carbon
-    // HIToolbox constants `kVK_F1`/`kVK_F2` — stable across macOS versions,
-    // reproduced here to avoid pulling in all of Carbon for two constants).
-    private static let virtualKeyCodeF1: Int64 = 0x7A
-    private static let virtualKeyCodeF2: Int64 = 0x78
-
     // `NX_KEYTYPE_BRIGHTNESS_UP`/`NX_KEYTYPE_BRIGHTNESS_DOWN` from
     // `IOKit/hidsystem/ev_keymap.h` — the media-key type codes packed into
     // an `NX_SYSDEFINED` event's `data1` field.
@@ -45,14 +43,41 @@ final class RealKeyTap: KeyTapControlling {
     // rather than some other system-defined event.
     private static let auxControlButtonsSubtype: Int16 = 8
 
+    private let permissionsChecker: PermissionsChecking
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var remap: KeyRemapShortcut?
     private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
 
-    func startIntercepting(onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
+    init(permissionsChecker: PermissionsChecking = RealPermissionsChecker()) {
+        self.permissionsChecker = permissionsChecker
+    }
+
+    func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
+        self.remap = remap
         self.onKeyPress = onKeyPress
         requestPermissionsIfNeeded()
-        installEventTap()
+
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+        } else {
+            installEventTap()
+        }
+    }
+
+    func stop() {
+        remap = nil
+        onKeyPress = nil
+
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+        }
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        }
+        eventTap = nil
+        runLoopSource = nil
     }
 
     // MARK: - Permissions
@@ -61,14 +86,11 @@ final class RealKeyTap: KeyTapControlling {
     /// Accessibility (needed for a tap that can consume, not just observe,
     /// key events) gate this feature per the spec's Further Notes. Each is
     /// only ever unrequested once — after the user answers macOS's system
-    /// prompt, `AXIsProcessTrusted`/`IOHIDCheckAccess` reflect that answer on
-    /// every future launch, so this explanation alert naturally shows only
-    /// on first run.
+    /// prompt, the permissions checker reflects that answer on every future
+    /// call, so this explanation alert naturally shows only on first run.
     private func requestPermissionsIfNeeded() {
-        let trusted = AXIsProcessTrusted()
-        let inputMonitoringAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
-        let needsAccessibility = !trusted
-        let needsInputMonitoring = inputMonitoringAccess != kIOHIDAccessTypeGranted
+        let needsAccessibility = !permissionsChecker.accessibilityGranted()
+        let needsInputMonitoring = !permissionsChecker.inputMonitoringGranted()
 
         guard needsAccessibility || needsInputMonitoring else { return }
 
@@ -92,7 +114,7 @@ final class RealKeyTap: KeyTapControlling {
         let alert = NSAlert()
         alert.messageText = "BrightBoi needs Accessibility and Input Monitoring access"
         alert.informativeText = """
-        BrightBoi remaps the physical F1/F2 brightness keys to control its full \
+        BrightBoi remaps its configured brightness keys to control its full \
         0–200% range instead of macOS's default 0–100% range. To intercept \
         those key presses system-wide, macOS requires Accessibility and Input \
         Monitoring permission, which you'll be asked to grant next.
@@ -145,15 +167,21 @@ final class RealKeyTap: KeyTapControlling {
             return Unmanaged.passUnretained(cgEvent)
         }
 
-        let press = brightnessMediaKeyPress(from: type, cgEvent: cgEvent)
-            ?? fnBrightnessKeyPress(from: type, cgEvent: cgEvent)
+        guard let remap else { return Unmanaged.passUnretained(cgEvent) }
+
+        let press = mediaKeyPress(from: type, cgEvent: cgEvent, remap: remap)
+            ?? f1f2FnKeyPress(from: type, cgEvent: cgEvent, remap: remap)
+            ?? modifiedKeyPress(from: type, cgEvent: cgEvent, remap: remap)
 
         guard let press else { return Unmanaged.passUnretained(cgEvent) }
         onKeyPress?(press)
         return nil
     }
 
-    private func brightnessMediaKeyPress(from type: CGEventType, cgEvent: CGEvent) -> BrightnessController.KeyPress? {
+    /// The bare-F1/F2 media-key path — only fires for whichever direction is
+    /// still configured to its default combo, so reconfiguring one direction
+    /// away from F1/F2 returns the physical key to native macOS handling.
+    private func mediaKeyPress(from type: CGEventType, cgEvent: CGEvent, remap: KeyRemapShortcut) -> BrightnessController.KeyPress? {
         guard type.rawValue == NSEvent.EventType.systemDefined.rawValue,
               let nsEvent = NSEvent(cgEvent: cgEvent),
               nsEvent.subtype.rawValue == Self.auxControlButtonsSubtype else { return nil }
@@ -163,19 +191,40 @@ final class RealKeyTap: KeyTapControlling {
         guard keyState == Self.keyDownState else { return nil }
 
         switch keyCode {
-        case Self.brightnessUpKeyCode: return .raise
-        case Self.brightnessDownKeyCode: return .lower
+        case Self.brightnessUpKeyCode where remap.raise == .f2: return .raise
+        case Self.brightnessDownKeyCode where remap.lower == .f1: return .lower
         default: return nil
         }
     }
 
-    private func fnBrightnessKeyPress(from type: CGEventType, cgEvent: CGEvent) -> BrightnessController.KeyPress? {
+    /// The Fn+F1/F2 ordinary-`keyDown` path — same default-only gating as
+    /// the media-key path above.
+    private func f1f2FnKeyPress(from type: CGEventType, cgEvent: CGEvent, remap: KeyRemapShortcut) -> BrightnessController.KeyPress? {
         guard type == .keyDown else { return nil }
 
         switch cgEvent.getIntegerValueField(.keyboardEventKeycode) {
-        case Self.virtualKeyCodeF1: return .lower
-        case Self.virtualKeyCodeF2: return .raise
+        case KeyCombo.f1VirtualKeyCode where remap.lower == .f1: return .lower
+        case KeyCombo.f2VirtualKeyCode where remap.raise == .f2: return .raise
         default: return nil
         }
+    }
+
+    /// The general path for any reconfigured combo — always carries at
+    /// least one modifier per ADR-0007, so it only ever arrives as an
+    /// ordinary `keyDown`, never a media-key event. Bridges through
+    /// `NSEvent` (the same bridge the media-key path above already uses) so
+    /// modifier-flag interpretation has one source of truth, shared with the
+    /// Settings shortcut recorder — see `KeyCombo.Modifiers.init(nsEventModifierFlags:)`.
+    private func modifiedKeyPress(from type: CGEventType, cgEvent: CGEvent, remap: KeyRemapShortcut) -> BrightnessController.KeyPress? {
+        guard type == .keyDown, let nsEvent = NSEvent(cgEvent: cgEvent) else { return nil }
+
+        let combo = KeyCombo(
+            modifiers: KeyCombo.Modifiers(nsEventModifierFlags: nsEvent.modifierFlags),
+            keyCode: Int64(nsEvent.keyCode)
+        )
+
+        if combo == remap.raise, remap.raise != .f1, remap.raise != .f2 { return .raise }
+        if combo == remap.lower, remap.lower != .f1, remap.lower != .f2 { return .lower }
+        return nil
     }
 }

@@ -25,10 +25,18 @@ final class BrightnessController {
         var iconFillFraction: Double
         var supportsBoost: Bool
         var launchAtLoginEnabled: Bool
+        var boostCeiling: Double
+        var keyRemapEnabled: Bool
+        var keyRemapShortcut: KeyRemapShortcut
 
         /// 5 nits per percentage point — 100% is the old 500-nit Nominal
         /// ceiling, 200% is the 1000-nit Boost ceiling, per ADR-0002.
         var nits: Double { percentage * 5 }
+
+        /// Same 5-nits-per-point conversion, applied to the configured Boost
+        /// Ceiling rather than the live percentage — what Settings' "Don't
+        /// let me go past" row shows.
+        var boostCeilingNits: Double { boostCeiling * 5 }
     }
 
     enum KeyPress {
@@ -47,6 +55,9 @@ final class BrightnessController {
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
     private let supportsBoost: Bool
+    private var boostCeiling: Double
+    private var keyRemapEnabled: Bool
+    private var keyRemapShortcut: KeyRemapShortcut
     private var pendingPersistWorkItem: DispatchWorkItem?
     private var terminationObserver: NSObjectProtocol?
 
@@ -74,12 +85,30 @@ final class BrightnessController {
         let supportsBoost = displayBrightness.supportsExtendedBrightness()
         self.supportsBoost = supportsBoost
 
-        let effectiveMaximum = Self.effectiveMaximum(supportsBoost: supportsBoost)
-        let restoredPercentage = Self.resolvedPercentage(persistence.loadPercentage() ?? Self.minimumPercentage, effectiveMaximum: effectiveMaximum)
+        // `nil` (fresh install) defaults to `maximumPercentage`, identical
+        // to today's fixed 200% ceiling until deliberately lowered.
+        let boostCeiling = Self.clampedBoostCeiling(persistence.loadBoostCeiling() ?? Self.maximumPercentage)
+        self.boostCeiling = boostCeiling
+
+        let keyRemapEnabled = persistence.loadKeyRemapEnabled() ?? true
+        self.keyRemapEnabled = keyRemapEnabled
+
+        let keyRemapShortcut = persistence.loadKeyRemapShortcut() ?? .defaultShortcut
+        self.keyRemapShortcut = keyRemapShortcut
+
+        let boostAwareCeiling = supportsBoost ? boostCeiling : Self.nominalCeilingPercentage
+        let restoredPercentage = Self.resolvedPercentage(persistence.loadPercentage() ?? Self.minimumPercentage, effectiveMaximum: boostAwareCeiling)
         // `nil` (fresh install) defaults to `true`, matching the app's
         // previous unconditional registration behavior for upgrading users.
         let launchAtLoginEnabled = persistence.loadLaunchAtLoginEnabled() ?? true
-        self.currentState = Self.state(for: restoredPercentage, supportsBoost: supportsBoost, launchAtLoginEnabled: launchAtLoginEnabled)
+        self.currentState = Self.state(
+            for: restoredPercentage,
+            supportsBoost: supportsBoost,
+            launchAtLoginEnabled: launchAtLoginEnabled,
+            boostCeiling: boostCeiling,
+            keyRemapEnabled: keyRemapEnabled,
+            keyRemapShortcut: keyRemapShortcut
+        )
         self.displayBrightness.apply(percentage: restoredPercentage)
 
         // Session-start-only effects: fired once here, never again per session.
@@ -87,8 +116,8 @@ final class BrightnessController {
         if launchAtLoginEnabled {
             self.loginItemService.registerForLaunchAtLogin()
         }
-        self.keyTap.startIntercepting { [weak self] press in
-            self?.handleKeyPress(press)
+        if keyRemapEnabled {
+            self.startKeyTap(remap: keyRemapShortcut)
         }
 
         // The debounce window (default 0.3s) would otherwise drop the final
@@ -110,8 +139,8 @@ final class BrightnessController {
     }
 
     func setPercentage(_ percentage: Double) {
-        let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: Self.effectiveMaximum(supportsBoost: supportsBoost))
-        currentState = Self.state(for: resolved, supportsBoost: supportsBoost, launchAtLoginEnabled: currentState.launchAtLoginEnabled)
+        let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: currentEffectiveMaximum)
+        currentState = updatedState(percentage: resolved)
         displayBrightness.apply(percentage: resolved)
         schedulePersist(resolved)
     }
@@ -122,13 +151,85 @@ final class BrightnessController {
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
-        currentState = Self.state(for: currentState.percentage, supportsBoost: supportsBoost, launchAtLoginEnabled: enabled)
+        currentState = updatedState(percentage: currentState.percentage, launchAtLoginEnabled: enabled)
         persistence.save(launchAtLoginEnabled: enabled)
         if enabled {
             loginItemService.registerForLaunchAtLogin()
         } else {
             loginItemService.unregisterFromLaunchAtLogin()
         }
+    }
+
+    /// Bounded `[100, 200]` per ADR-0004 — the floor keeps an accidental drag
+    /// from blacking out the screen, the ceiling is the hard maximum
+    /// ADR-0002 already established. Lowering it below the current live
+    /// brightness clamps brightness down immediately, via the `setPercentage`
+    /// re-resolve below.
+    func setBoostCeiling(_ percentage: Double) {
+        let clamped = Self.clampedBoostCeiling(percentage)
+        boostCeiling = clamped
+        persistence.save(boostCeiling: clamped)
+        currentState = updatedState(percentage: currentState.percentage)
+        if currentState.percentage > clamped {
+            setPercentage(currentState.percentage)
+        }
+    }
+
+    /// Off fully releases the tap — the configured keys return to native
+    /// macOS handling. On reinstalls it with the currently configured combo.
+    func setKeyRemapEnabled(_ enabled: Bool) {
+        keyRemapEnabled = enabled
+        persistence.save(keyRemapEnabled: enabled)
+        currentState = updatedState(percentage: currentState.percentage)
+        if enabled {
+            startKeyTap(remap: keyRemapShortcut)
+        } else {
+            keyTap.stop()
+        }
+    }
+
+    /// Restarts the tap live with the new combo when the remap is currently
+    /// enabled; when disabled, just persists the new combo for next time it's
+    /// turned on.
+    func setKeyRemapShortcut(_ shortcut: KeyRemapShortcut) {
+        keyRemapShortcut = shortcut
+        persistence.save(keyRemapShortcut: shortcut)
+        currentState = updatedState(percentage: currentState.percentage)
+        if keyRemapEnabled {
+            startKeyTap(remap: shortcut)
+        }
+    }
+
+    private func startKeyTap(remap: KeyRemapShortcut) {
+        keyTap.start(remap: remap) { [weak self] press in
+            self?.handleKeyPress(press)
+        }
+    }
+
+    /// The ceiling `setPercentage`/key presses actually clamp against: the
+    /// user's configured Boost Ceiling on an XDR Mac, or the fixed Nominal
+    /// ceiling on a non-XDR Mac where Boost — and therefore a configurable
+    /// ceiling — doesn't apply. Distinct from the static, hardware-only
+    /// `effectiveMaximum(supportsBoost:)` the popover's slider/icon still use
+    /// (ticket 01) — that track intentionally keeps its fixed 0...200 domain
+    /// regardless of a personal ceiling; only how far a set percentage is
+    /// allowed to travel changes here.
+    private var currentEffectiveMaximum: Double {
+        supportsBoost ? boostCeiling : Self.nominalCeilingPercentage
+    }
+
+    /// Rebuilds `currentState` from the live percentage plus whichever
+    /// stored properties haven't changed, defaulting every other field to
+    /// its current `currentState` value or the controller's own stored copy.
+    private func updatedState(percentage: Double, launchAtLoginEnabled: Bool? = nil) -> State {
+        Self.state(
+            for: percentage,
+            supportsBoost: supportsBoost,
+            launchAtLoginEnabled: launchAtLoginEnabled ?? currentState.launchAtLoginEnabled,
+            boostCeiling: boostCeiling,
+            keyRemapEnabled: keyRemapEnabled,
+            keyRemapShortcut: keyRemapShortcut
+        )
     }
 
     private func schedulePersist(_ percentage: Double) {
@@ -176,13 +277,27 @@ final class BrightnessController {
         roundToGranularity(clamp(percentage, to: effectiveMaximum))
     }
 
-    private static func state(for percentage: Double, supportsBoost: Bool, launchAtLoginEnabled: Bool) -> State {
+    private static func clampedBoostCeiling(_ percentage: Double) -> Double {
+        min(max(percentage, nominalCeilingPercentage), maximumPercentage)
+    }
+
+    private static func state(
+        for percentage: Double,
+        supportsBoost: Bool,
+        launchAtLoginEnabled: Bool,
+        boostCeiling: Double,
+        keyRemapEnabled: Bool,
+        keyRemapShortcut: KeyRemapShortcut
+    ) -> State {
         State(
             percentage: percentage,
             isBoosted: percentage > nominalCeilingPercentage,
             iconFillFraction: percentage / effectiveMaximum(supportsBoost: supportsBoost),
             supportsBoost: supportsBoost,
-            launchAtLoginEnabled: launchAtLoginEnabled
+            launchAtLoginEnabled: launchAtLoginEnabled,
+            boostCeiling: boostCeiling,
+            keyRemapEnabled: keyRemapEnabled,
+            keyRemapShortcut: keyRemapShortcut
         )
     }
 }
