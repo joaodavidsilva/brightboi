@@ -19,17 +19,28 @@ protocol AutoBrightnessToggling {
     func disableAutoBrightness()
 }
 
-/// Registers BrightBoi as a login item. Ticket 08 supplies the real
-/// `SMAppService`-backed implementation.
+/// Registers/unregisters BrightBoi as a login item. Ticket 08 supplies the
+/// real `SMAppService`-backed implementation.
 protocol LoginItemRegistering {
     func registerForLaunchAtLogin()
+
+    /// Removes BrightBoi from System Settings' Login Items, for when the
+    /// user unchecks the launch-at-login preference.
+    func unregisterFromLaunchAtLogin()
 }
 
-/// Persists the chosen brightness percentage across relaunch/reboot. Ticket
-/// 08 supplies the real `UserDefaults`-backed implementation.
+/// Persists the chosen brightness percentage and launch-at-login preference
+/// across relaunch/reboot. Ticket 08 supplies the real `UserDefaults`-backed
+/// implementation.
 protocol BrightnessPersisting {
     func save(percentage: Double)
     func loadPercentage() -> Double?
+
+    /// `nil` on a fresh install (nothing ever persisted), which
+    /// `BrightnessController` treats as defaulting to `true` — matching
+    /// today's unconditional registration behavior for upgrading users.
+    func save(launchAtLoginEnabled: Bool)
+    func loadLaunchAtLoginEnabled() -> Bool?
 }
 
 /// Starts the system-wide F1/F2 key tap. Ticket 07 supplies the real

@@ -26,15 +26,21 @@ final class FakeAutoBrightnessToggle: AutoBrightnessToggling {
 
 final class FakeLoginItemService: LoginItemRegistering {
     private(set) var registerCallCount = 0
+    private(set) var unregisterCallCount = 0
 
     func registerForLaunchAtLogin() {
         registerCallCount += 1
+    }
+
+    func unregisterFromLaunchAtLogin() {
+        unregisterCallCount += 1
     }
 }
 
 final class FakeBrightnessPersistence: BrightnessPersisting {
     private(set) var savedPercentages: [Double] = []
     var storedPercentage: Double?
+    var storedLaunchAtLoginEnabled: Bool?
 
     func save(percentage: Double) {
         savedPercentages.append(percentage)
@@ -43,6 +49,14 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
 
     func loadPercentage() -> Double? {
         storedPercentage
+    }
+
+    func save(launchAtLoginEnabled: Bool) {
+        storedLaunchAtLoginEnabled = launchAtLoginEnabled
+    }
+
+    func loadLaunchAtLoginEnabled() -> Bool? {
+        storedLaunchAtLoginEnabled
     }
 }
 

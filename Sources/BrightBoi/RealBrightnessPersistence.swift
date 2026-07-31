@@ -6,6 +6,7 @@ import Foundation
 /// custom durability mechanism needed beyond reading/writing the one key.
 final class RealBrightnessPersistence: BrightnessPersisting {
     private static let percentageKey = "com.ptlghost.BrightBoi.percentage"
+    private static let launchAtLoginEnabledKey = "com.ptlghost.BrightBoi.launchAtLoginEnabled"
 
     private let defaults: UserDefaults
 
@@ -29,5 +30,16 @@ final class RealBrightnessPersistence: BrightnessPersisting {
     /// now that persistence is real.
     func loadPercentage() -> Double? {
         defaults.object(forKey: Self.percentageKey) as? Double ?? BrightnessController.nominalCeilingPercentage
+    }
+
+    func save(launchAtLoginEnabled: Bool) {
+        defaults.set(launchAtLoginEnabled, forKey: Self.launchAtLoginEnabledKey)
+    }
+
+    /// `nil` on a fresh install (nothing ever persisted) — `BrightnessController`
+    /// treats that as defaulting to `true`, matching the app's previous
+    /// unconditional registration behavior for upgrading users.
+    func loadLaunchAtLoginEnabled() -> Bool? {
+        defaults.object(forKey: Self.launchAtLoginEnabledKey) as? Bool
     }
 }

@@ -18,7 +18,8 @@ struct BrightnessControllerTests {
     private func makeFixture(
         storedPercentage: Double? = nil,
         persistenceDebounceInterval: TimeInterval = 0.3,
-        supportsExtendedBrightness: Bool = true
+        supportsExtendedBrightness: Bool = true,
+        storedLaunchAtLoginEnabled: Bool? = nil
     ) -> Fixture {
         let displayBrightness = FakeDisplayBrightnessProvider()
         displayBrightness.stubbedSupportsExtendedBrightness = supportsExtendedBrightness
@@ -26,6 +27,7 @@ struct BrightnessControllerTests {
         let loginItemService = FakeLoginItemService()
         let persistence = FakeBrightnessPersistence()
         persistence.storedPercentage = storedPercentage
+        persistence.storedLaunchAtLoginEnabled = storedLaunchAtLoginEnabled
         let keyTap = FakeKeyTap()
 
         let controller = BrightnessController(
@@ -284,5 +286,42 @@ struct BrightnessControllerTests {
 
         // 42 rounds to 40 before it's ever persisted.
         #expect(fixture.persistence.savedPercentages == [40])
+    }
+
+    // MARK: Launch-at-login preference
+
+    @Test("with nothing persisted, still registers exactly once at init, matching today's unconditional behavior")
+    func launchAtLoginDefaultsToRegisteredWhenNothingPersisted() {
+        let fixture = makeFixture(storedLaunchAtLoginEnabled: nil)
+        #expect(fixture.loginItemService.registerCallCount == 1)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == true)
+    }
+
+    @Test("a persisted false skips registration entirely at init, without redundantly calling unregister")
+    func launchAtLoginPersistedFalseSkipsRegistrationAtInit() {
+        let fixture = makeFixture(storedLaunchAtLoginEnabled: false)
+        #expect(fixture.loginItemService.registerCallCount == 0)
+        #expect(fixture.loginItemService.unregisterCallCount == 0)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == false)
+    }
+
+    @Test("setLaunchAtLoginEnabled(false) unregisters and persists false")
+    func setLaunchAtLoginEnabledFalseUnregistersAndPersists() {
+        let fixture = makeFixture()
+        fixture.controller.setLaunchAtLoginEnabled(false)
+        #expect(fixture.loginItemService.unregisterCallCount == 1)
+        #expect(fixture.persistence.storedLaunchAtLoginEnabled == false)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == false)
+    }
+
+    @Test("setLaunchAtLoginEnabled(true) registers and persists true")
+    func setLaunchAtLoginEnabledTrueRegistersAndPersists() {
+        // Persisted false means init skips registration, so the assertion
+        // below exercises the live toggle path specifically, not init's.
+        let fixture = makeFixture(storedLaunchAtLoginEnabled: false)
+        fixture.controller.setLaunchAtLoginEnabled(true)
+        #expect(fixture.loginItemService.registerCallCount == 1)
+        #expect(fixture.persistence.storedLaunchAtLoginEnabled == true)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == true)
     }
 }

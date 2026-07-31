@@ -17,4 +17,20 @@ final class RealLoginItemService: LoginItemRegistering {
             FileHandle.standardError.write(Data("BrightBoi: failed to register login item: \(error)\n".utf8))
         }
     }
+
+    func unregisterFromLaunchAtLogin() {
+        let service = SMAppService.mainApp
+        // `.requiresApproval` still shows an entry in System Settings' Login
+        // Items pending approval — only `.notRegistered` means there's
+        // genuinely nothing left to remove. Mirroring the `.enabled`-only
+        // skip in `registerForLaunchAtLogin` here would leave a
+        // `.requiresApproval` entry behind after unchecking the box.
+        guard service.status != .notRegistered else { return }
+
+        do {
+            try service.unregister()
+        } catch {
+            FileHandle.standardError.write(Data("BrightBoi: failed to unregister login item: \(error)\n".utf8))
+        }
+    }
 }

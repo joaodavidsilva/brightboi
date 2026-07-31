@@ -24,6 +24,7 @@ final class BrightnessController {
         var isBoosted: Bool
         var iconFillFraction: Double
         var supportsBoost: Bool
+        var launchAtLoginEnabled: Bool
     }
 
     enum KeyPress {
@@ -71,12 +72,17 @@ final class BrightnessController {
 
         let effectiveMaximum = Self.effectiveMaximum(supportsBoost: supportsBoost)
         let restoredPercentage = Self.resolvedPercentage(persistence.loadPercentage() ?? Self.minimumPercentage, effectiveMaximum: effectiveMaximum)
-        self.currentState = Self.state(for: restoredPercentage, supportsBoost: supportsBoost)
+        // `nil` (fresh install) defaults to `true`, matching the app's
+        // previous unconditional registration behavior for upgrading users.
+        let launchAtLoginEnabled = persistence.loadLaunchAtLoginEnabled() ?? true
+        self.currentState = Self.state(for: restoredPercentage, supportsBoost: supportsBoost, launchAtLoginEnabled: launchAtLoginEnabled)
         self.displayBrightness.apply(percentage: restoredPercentage)
 
         // Session-start-only effects: fired once here, never again per session.
         self.autoBrightnessToggle.disableAutoBrightness()
-        self.loginItemService.registerForLaunchAtLogin()
+        if launchAtLoginEnabled {
+            self.loginItemService.registerForLaunchAtLogin()
+        }
         self.keyTap.startIntercepting { [weak self] press in
             self?.handleKeyPress(press)
         }
@@ -101,7 +107,7 @@ final class BrightnessController {
 
     func setPercentage(_ percentage: Double) {
         let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: Self.effectiveMaximum(supportsBoost: supportsBoost))
-        currentState = Self.state(for: resolved, supportsBoost: supportsBoost)
+        currentState = Self.state(for: resolved, supportsBoost: supportsBoost, launchAtLoginEnabled: currentState.launchAtLoginEnabled)
         displayBrightness.apply(percentage: resolved)
         schedulePersist(resolved)
     }
@@ -109,6 +115,16 @@ final class BrightnessController {
     func handleKeyPress(_ press: KeyPress) {
         let delta = press == .raise ? keyStepPercentage : -keyStepPercentage
         setPercentage(currentState.percentage + delta)
+    }
+
+    func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        currentState = Self.state(for: currentState.percentage, supportsBoost: supportsBoost, launchAtLoginEnabled: enabled)
+        persistence.save(launchAtLoginEnabled: enabled)
+        if enabled {
+            loginItemService.registerForLaunchAtLogin()
+        } else {
+            loginItemService.unregisterFromLaunchAtLogin()
+        }
     }
 
     private func schedulePersist(_ percentage: Double) {
@@ -152,12 +168,13 @@ final class BrightnessController {
         roundToGranularity(clamp(percentage, to: effectiveMaximum))
     }
 
-    private static func state(for percentage: Double, supportsBoost: Bool) -> State {
+    private static func state(for percentage: Double, supportsBoost: Bool, launchAtLoginEnabled: Bool) -> State {
         State(
             percentage: percentage,
             isBoosted: percentage > nominalCeilingPercentage,
             iconFillFraction: percentage / effectiveMaximum(supportsBoost: supportsBoost),
-            supportsBoost: supportsBoost
+            supportsBoost: supportsBoost,
+            launchAtLoginEnabled: launchAtLoginEnabled
         )
     }
 }

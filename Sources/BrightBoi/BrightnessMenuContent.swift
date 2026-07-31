@@ -29,6 +29,15 @@ struct BrightnessMenuContent: View {
             Text("\(Int(controller.currentState.percentage.rounded()))%")
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
+
+            Toggle(
+                "Launch at Login",
+                isOn: Binding(
+                    get: { controller.currentState.launchAtLoginEnabled },
+                    set: { controller.setLaunchAtLoginEnabled($0) }
+                )
+            )
+            .toggleStyle(.checkbox)
         }
         .padding()
         .frame(width: 220)
