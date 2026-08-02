@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "BrightBoi",
-    platforms: [.macOS("27.0")],
+    platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
             name: "BrightBoi",

@@ -65,7 +65,7 @@ since the physical backlight headroom Boost relies on doesn't exist there.
 
 ## Building from source
 
-Requires Xcode / Swift toolchain for macOS 27+.
+Runs on macOS 14 (Sonoma) or later. Building requires Xcode 16 / the Swift 6 toolchain.
 
 ```bash
 git clone https://github.com/joaodavidsilva/brightboi.git
