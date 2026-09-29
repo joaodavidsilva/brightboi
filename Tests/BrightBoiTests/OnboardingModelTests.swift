@@ -11,9 +11,8 @@ struct OnboardingModelTests {
         let permissionsChecker: FakePermissionsChecker
     }
 
-    private func makeFixture(storedHasCompletedOnboarding: Bool? = nil) -> Fixture {
+    private func makeFixture() -> Fixture {
         let persistence = FakeBrightnessPersistence()
-        persistence.storedHasCompletedOnboarding = storedHasCompletedOnboarding
         let permissionsChecker = FakePermissionsChecker()
         let model = OnboardingModel(persistence: persistence, permissionsChecker: permissionsChecker)
         return Fixture(model: model, persistence: persistence, permissionsChecker: permissionsChecker)
@@ -43,9 +42,11 @@ struct OnboardingModelTests {
 
         fixture.model.advance()
         #expect(fixture.model.step == .permissions)
+        #expect(fixture.persistence.storedHasCompletedOnboarding == nil)
 
         fixture.model.advance()
         #expect(fixture.model.step == .confirmation)
+        #expect(fixture.persistence.storedHasCompletedOnboarding == nil)
     }
 
     @Test("advancing past confirmation persists completion and fires onFinished")
@@ -88,6 +89,7 @@ struct OnboardingModelTests {
         fixture.model.skip()
 
         #expect(finishedCount == 1)
+        #expect(fixture.persistence.saveHasCompletedOnboardingCallCount == 1)
     }
 
     // MARK: Permission requests — replaces RealKeyTap's old alert path
@@ -117,6 +119,8 @@ struct OnboardingModelTests {
 
         #expect(model.accessibilityGranted == false)
         #expect(model.inputMonitoringGranted == true)
+        #expect(permissionsChecker.accessibilityQueryCount == 1)
+        #expect(permissionsChecker.inputMonitoringQueryCount == 1)
     }
 
     @Test("requesting a permission refreshes its granted status from the checker")

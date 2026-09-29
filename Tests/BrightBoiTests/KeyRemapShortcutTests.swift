@@ -1,8 +1,62 @@
+import AppKit
 import Testing
 @testable import BrightBoi
 
 @Suite("KeyCombo remap validity")
 struct KeyRemapShortcutTests {
+
+    // MARK: displayString
+
+    @Test("displayString shows F1/F2 as bare, with no modifier symbols")
+    func displayStringForFunctionKeys() {
+        #expect(KeyCombo.f1.displayString == "F1")
+        #expect(KeyCombo.f2.displayString == "F2")
+    }
+
+    @Test("displayString renders modifier symbols in a fixed order, then the key name")
+    func displayStringForModifiedCombo() {
+        let combo = KeyCombo(modifiers: [.control, .option], keyCode: 0x7E)
+        #expect(combo.displayString == "⌃⌥↑")
+    }
+
+    @Test("displayString falls back to a numbered label for a keycode with no name")
+    func displayStringForUnknownKeyCode() {
+        let combo = KeyCombo(modifiers: [.command], keyCode: 9999)
+        #expect(combo.displayString == "⌘Key 9999")
+    }
+
+    // MARK: Modifiers(nsEventModifierFlags:)
+
+    @Test("Modifiers(nsEventModifierFlags:) carries over exactly the four flags that matter")
+    func modifiersFromNSEventFlags() {
+        let flags: NSEvent.ModifierFlags = [.command, .shift]
+        let modifiers = KeyCombo.Modifiers(nsEventModifierFlags: flags)
+        #expect(modifiers == [.command, .shift])
+    }
+
+    @Test("Modifiers(nsEventModifierFlags:) ignores flags KeyCombo doesn't model, e.g. .function")
+    func modifiersFromNSEventFlagsIgnoresUnmodeledFlags() {
+        let flags: NSEvent.ModifierFlags = [.control, .function]
+        let modifiers = KeyCombo.Modifiers(nsEventModifierFlags: flags)
+        #expect(modifiers == [.control])
+    }
+
+    // MARK: Codable — the direction that protects existing users' shortcuts
+
+    @Test("decoding the golden default-shortcut JSON equals .defaultShortcut")
+    func decodesGoldenDefaultShortcutJSON() throws {
+        let json = #"{"lower":{"keyCode":122,"modifiers":0},"raise":{"keyCode":120,"modifiers":0}}"#
+        let decoded = try JSONDecoder().decode(KeyRemapShortcut.self, from: Data(json.utf8))
+        #expect(decoded == .defaultShortcut)
+    }
+
+    @Test("encoding with sortedKeys matches the documented byte-for-byte format")
+    func encodesWithSortedKeysMatchesDocumentedFormat() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let data = try encoder.encode(KeyRemapShortcut.defaultShortcut)
+        #expect(String(data: data, encoding: .utf8) == #"{"lower":{"keyCode":122,"modifiers":0},"raise":{"keyCode":120,"modifiers":0}}"#)
+    }
 
     @Test("F1 is a valid remap combo with no modifier")
     func f1ValidWithoutModifier() {
