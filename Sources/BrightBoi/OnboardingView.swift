@@ -69,6 +69,12 @@ private struct WelcomeStepView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 280)
 
+            Text("I also switch off macOS's auto-brightness so the light sensor can't undo your level — I put it back the way I found it when you quit.")
+                .font(.system(size: 11))
+                .foregroundStyle(palette.tertiaryText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 280)
+
             PrimaryButton(title: "Let's go", palette: palette, action: onAdvance)
                 .padding(.top, 8)
         }

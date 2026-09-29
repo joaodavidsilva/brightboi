@@ -35,6 +35,7 @@ struct SettingsView: View {
         .frame(width: 480)
         .onAppear {
             controller.refreshLaunchAtLoginStatus()
+            controller.syncFromDisplay()
         }
         // SwiftUI doesn't reliably re-run `onAppear` when Settings is
         // reopened, and System Settings' Login Items list can change
@@ -43,6 +44,7 @@ struct SettingsView: View {
         // becomes active, whichever way that happens.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             controller.refreshLaunchAtLoginStatus()
+            controller.syncFromDisplay()
         }
     }
 
@@ -57,6 +59,18 @@ struct SettingsView: View {
                         isOn: Binding(
                             get: { state.launchAtLoginEnabled },
                             set: { controller.setLaunchAtLoginEnabled($0) }
+                        ),
+                        palette: palette
+                    )
+
+                    rowDivider(palette: palette)
+
+                    toggleRow(
+                        title: "Turn off macOS auto-brightness while BrightBoi runs",
+                        subtitle: "Otherwise the light sensor can undo the level you set. Your original setting is always restored on quit.",
+                        isOn: Binding(
+                            get: { state.autoBrightnessTakeoverEnabled },
+                            set: { controller.setAutoBrightnessTakeoverEnabled($0) }
                         ),
                         palette: palette
                     )
@@ -88,7 +102,21 @@ struct SettingsView: View {
                 .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
 
                 launchAtLoginNotice(state: state, palette: palette)
+                autoBrightnessUnavailableNotice(palette: palette)
             }
+        }
+    }
+
+    /// Shown only when the private CoreBrightness symbol couldn't be
+    /// loaded — the toggle above still exists, but flipping it can't
+    /// actually change anything, so this says so rather than staying
+    /// silently ineffective.
+    @ViewBuilder
+    private func autoBrightnessUnavailableNotice(palette: BrightnessMenuContent.Palette) -> some View {
+        if controller.autoBrightnessUnavailable {
+            Text("Couldn't reach macOS's auto-brightness setting on this system — this switch has no effect.")
+                .font(.system(size: 11))
+                .foregroundStyle(palette.secondaryText)
         }
     }
 

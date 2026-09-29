@@ -20,15 +20,18 @@ import CoreGraphics
 @MainActor
 final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
     private typealias SetBrightnessFunc = @convention(c) (CGDirectDisplayID, Float) -> Int32
+    private typealias GetBrightnessFunc = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
 
     private let displayID: CGDirectDisplayID
     private let setBrightness: SetBrightnessFunc?
+    private let getBrightness: GetBrightnessFunc?
     private let boostEngagement: BoostEngagement
 
     init() {
         let displayID = Self.resolveBuiltInDisplayID()
         self.displayID = displayID
         self.setBrightness = Self.loadSetBrightnessSymbol()
+        self.getBrightness = Self.loadGetBrightnessSymbol()
         self.boostEngagement = BoostEngagement(displayID: displayID)
     }
 
@@ -42,6 +45,28 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         let nominalPercentage = min(max(percentage, 0), BrightnessController.nominalCeilingPercentage)
         let value = Float(nominalPercentage / BrightnessController.nominalCeilingPercentage)
         _ = setBrightness(displayID, value)
+    }
+
+    /// `nil` when the symbol couldn't be loaded or the call itself fails
+    /// (return code != 0) — notably in clamshell mode, where
+    /// `resolveBuiltInDisplayID` falls back to `CGMainDisplayID()` (the
+    /// external display), which this getter can't read. A read-only call
+    /// with no side effects, so it's safe to call from `BrightnessController.init`
+    /// as well as afterwards to notice a change made outside BrightBoi.
+    func currentNominalPercentage() -> Double? {
+        guard let getBrightness else { return nil }
+        var value: Float = 0
+        let result = getBrightness(displayID, &value)
+        guard result == 0 else { return nil }
+        return Double(value) * BrightnessController.nominalCeilingPercentage
+    }
+
+    /// The Boost-only half of adopting a brightness change made outside
+    /// BrightBoi: releases the scaled gamma table and EDR headroom without
+    /// touching Nominal, since Nominal is already at whatever the outside
+    /// change set it to.
+    func adoptExternalNominal() {
+        boostEngagement.disengage()
     }
 
     /// Per ADR-0003: real EDR headroom (`maximumExtendedDynamicRangeColorComponentValue`
@@ -100,5 +125,20 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
             return nil
         }
         return unsafeBitCast(symbol, to: SetBrightnessFunc.self)
+    }
+
+    private static func loadGetBrightnessSymbol() -> GetBrightnessFunc? {
+        guard let handle = dlopen(
+            "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices",
+            RTLD_NOW
+        ) else {
+            FileHandle.standardError.write(Data("BrightBoi: could not dlopen DisplayServices.framework\n".utf8))
+            return nil
+        }
+        guard let symbol = dlsym(handle, "DisplayServicesGetBrightness") else {
+            FileHandle.standardError.write(Data("BrightBoi: could not dlsym DisplayServicesGetBrightness\n".utf8))
+            return nil
+        }
+        return unsafeBitCast(symbol, to: GetBrightnessFunc.self)
     }
 }

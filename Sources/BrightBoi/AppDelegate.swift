@@ -87,5 +87,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         controller.flushPendingPersist()
+        controller.restoreSystemStateOnTermination()
     }
 }

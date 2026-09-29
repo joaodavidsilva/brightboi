@@ -17,6 +17,7 @@ struct BrightnessControllerTests {
         let powerSource: FakePowerSourceProvider
         let thermalState: FakeThermalStateProvider
         let bundleLocation: FakeBundleLocationProvider
+        let callLog: CallLog
     }
 
     private func makeFixture(
@@ -28,6 +29,7 @@ struct BrightnessControllerTests {
         storedKeyRemapEnabled: Bool? = nil,
         storedKeyRemapShortcut: KeyRemapShortcut? = nil,
         isOnBatteryPower: Bool = false,
+        isLowPowerModeEnabled: Bool = false,
         stubbedThermalState: ProcessInfo.ThermalState = .nominal,
         storedHasCompletedOnboarding: Bool? = true,
         storedLastRegisteredLoginItemPath: String? = nil,
@@ -38,12 +40,21 @@ struct BrightnessControllerTests {
         isInApplicationsFolder: Bool = true,
         isTranslocatedOrReadOnly: Bool = false,
         stubbedDisplayApplyOutcome: BrightnessApplyOutcome = .applied,
+        stubbedCurrentNominalPercentage: Double? = nil,
+        stubbedIsAutoBrightnessEnabled: Bool? = true,
+        storedAutoBrightnessWasEnabledOriginally: Bool? = nil,
+        storedAutoBrightnessTakeoverEnabled: Bool? = nil,
         startController: Bool = true
     ) -> Fixture {
+        let callLog = CallLog()
         let displayBrightness = FakeDisplayBrightnessProvider()
         displayBrightness.stubbedSupportsExtendedBrightness = supportsExtendedBrightness
         displayBrightness.stubbedOutcome = stubbedDisplayApplyOutcome
+        displayBrightness.stubbedCurrentNominalPercentage = stubbedCurrentNominalPercentage
+        displayBrightness.callLog = callLog
         let autoBrightnessToggle = FakeAutoBrightnessToggle()
+        autoBrightnessToggle.stubbedIsAutoBrightnessEnabled = stubbedIsAutoBrightnessEnabled
+        autoBrightnessToggle.callLog = callLog
         let loginItemService = FakeLoginItemService()
         loginItemService.stubbedStatus = stubbedLoginItemStatus
         loginItemService.stubbedRegisterError = stubbedRegisterError
@@ -56,9 +67,12 @@ struct BrightnessControllerTests {
         persistence.storedKeyRemapShortcut = storedKeyRemapShortcut
         persistence.storedHasCompletedOnboarding = storedHasCompletedOnboarding
         persistence.storedLastRegisteredLoginItemPath = storedLastRegisteredLoginItemPath
+        persistence.storedAutoBrightnessWasEnabledOriginally = storedAutoBrightnessWasEnabledOriginally
+        persistence.storedAutoBrightnessTakeoverEnabled = storedAutoBrightnessTakeoverEnabled
         let keyTap = FakeKeyTap()
         let powerSource = FakePowerSourceProvider()
         powerSource.stubbedIsOnBatteryPower = isOnBatteryPower
+        powerSource.stubbedIsLowPowerModeEnabled = isLowPowerModeEnabled
         let thermalState = FakeThermalStateProvider()
         thermalState.stubbedThermalState = stubbedThermalState
         let bundleLocation = FakeBundleLocationProvider()
@@ -90,7 +104,8 @@ struct BrightnessControllerTests {
             keyTap: keyTap,
             powerSource: powerSource,
             thermalState: thermalState,
-            bundleLocation: bundleLocation
+            bundleLocation: bundleLocation,
+            callLog: callLog
         )
     }
 
@@ -203,6 +218,40 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.percentage == 45)
     }
 
+    @Test("rounding to a grid point at or below 0 never produces a negative zero")
+    func roundingNeverProducesNegativeZero() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(0)
+        #expect(fixture.controller.currentState.percentage.sign == .plus)
+
+        fixture.controller.setPercentage(2)
+        #expect(fixture.controller.currentState.percentage.sign == .plus)
+    }
+
+    // MARK: Finite-value guards (NaN / infinity)
+
+    @Test("setPercentage ignores NaN, leaving the current value untouched")
+    func setPercentageIgnoresNaN() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        fixture.controller.setPercentage(.nan)
+        #expect(fixture.controller.currentState.percentage == 50)
+    }
+
+    @Test("setPercentage ignores infinity")
+    func setPercentageIgnoresInfinity() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        fixture.controller.setPercentage(.infinity)
+        #expect(fixture.controller.currentState.percentage == 50)
+    }
+
+    @Test("a NaN stored percentage is discarded, adopting the display or the default instead of trapping the UI")
+    func nanStoredPercentageIsDiscarded() {
+        let fixture = makeFixture(storedPercentage: .nan, stubbedCurrentNominalPercentage: nil)
+        #expect(fixture.controller.currentState.percentage == 100)
+    }
+
     // MARK: Auto-Brightness Takeover
 
     @Test("Takeover fires exactly once on controller start, not per setPercentage call")
@@ -227,6 +276,197 @@ struct BrightnessControllerTests {
 
         #expect(fixture.loginItemService.registerCallCount == 1)
         #expect(fixture.keyTap.startCallCount == 1)
+    }
+
+    @Test("auto-brightness is disabled before the first display apply, so corebrightnessd can't ramp over BrightBoi's own write")
+    func disablesAutoBrightnessBeforeFirstApply() {
+        let fixture = makeFixture(storedPercentage: 60)
+        let disableIndex = fixture.callLog.entries.firstIndex(of: "disableAuto")
+        let firstApplyIndex = fixture.callLog.entries.firstIndex { $0.hasPrefix("apply(") }
+        #expect(disableIndex != nil)
+        #expect(firstApplyIndex != nil)
+        if let disableIndex, let firstApplyIndex {
+            #expect(disableIndex < firstApplyIndex)
+        }
+    }
+
+    @Test("nothing is applied at start when the percentage was adopted from the display, only disable")
+    func adoptedPercentageSkipsInitialApply() {
+        let fixture = makeFixture(storedPercentage: nil, stubbedCurrentNominalPercentage: 60)
+        #expect(fixture.callLog.entries == ["disableAuto"])
+    }
+
+    // MARK: Auto-Brightness Takeover — recording and restoring the original
+
+    @Test("the original auto-brightness setting is recorded once at start, before it's disabled")
+    func recordsOriginalAutoBrightnessBeforeDisabling() {
+        let fixture = makeFixture(stubbedIsAutoBrightnessEnabled: true)
+        #expect(fixture.persistence.storedAutoBrightnessWasEnabledOriginally == true)
+    }
+
+    @Test("a second launch never overwrites the already-recorded original")
+    func doesNotOverwriteRecordedOriginal() {
+        let fixture = makeFixture(stubbedIsAutoBrightnessEnabled: false, storedAutoBrightnessWasEnabledOriginally: true)
+        #expect(fixture.persistence.storedAutoBrightnessWasEnabledOriginally == true)
+    }
+
+    @Test("restoring on termination re-enables auto-brightness only when the recorded original was enabled")
+    func restoresAutoBrightnessOnlyWhenOriginalWasEnabled() {
+        let enabledFixture = makeFixture(storedAutoBrightnessWasEnabledOriginally: true)
+        enabledFixture.controller.restoreSystemStateOnTermination()
+        #expect(enabledFixture.autoBrightnessToggle.enableCallCount == 1)
+
+        let disabledFixture = makeFixture(storedAutoBrightnessWasEnabledOriginally: false)
+        disabledFixture.controller.restoreSystemStateOnTermination()
+        #expect(disabledFixture.autoBrightnessToggle.enableCallCount == 0)
+    }
+
+    @Test("restoring on termination clears the recorded original so the next launch records a fresh one")
+    func restoringOnTerminationClearsRecordedOriginal() {
+        let fixture = makeFixture(storedAutoBrightnessWasEnabledOriginally: true)
+        fixture.controller.restoreSystemStateOnTermination()
+        #expect(fixture.persistence.storedAutoBrightnessWasEnabledOriginally == nil)
+    }
+
+    @Test("restoring on termination disengages Boost's gamma table when still boosted, without writing Nominal")
+    func restoringOnTerminationDisengagesBoost() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        fixture.controller.restoreSystemStateOnTermination()
+        #expect(fixture.displayBrightness.adoptExternalNominalCallCount == 1)
+    }
+
+    @Test("the Settings toggle turned off re-enables auto-brightness immediately, only if the original was enabled")
+    func togglingTakeoverOffReenablesWhenOriginalWasEnabled() {
+        let fixture = makeFixture(storedAutoBrightnessWasEnabledOriginally: true)
+        fixture.controller.setAutoBrightnessTakeoverEnabled(false)
+        #expect(fixture.autoBrightnessToggle.enableCallCount == 1)
+        #expect(fixture.persistence.storedAutoBrightnessTakeoverEnabled == false)
+        #expect(fixture.controller.currentState.autoBrightnessTakeoverEnabled == false)
+    }
+
+    @Test("the Settings toggle turned off does nothing when the original was already disabled")
+    func togglingTakeoverOffDoesNothingWhenOriginalWasDisabled() {
+        let fixture = makeFixture(storedAutoBrightnessWasEnabledOriginally: false)
+        fixture.controller.setAutoBrightnessTakeoverEnabled(false)
+        #expect(fixture.autoBrightnessToggle.enableCallCount == 0)
+    }
+
+    @Test("the Settings toggle turned back on disables auto-brightness again")
+    func togglingTakeoverBackOnDisablesAgain() {
+        let fixture = makeFixture()
+        fixture.controller.setAutoBrightnessTakeoverEnabled(false)
+        let disableCountAfterOff = fixture.autoBrightnessToggle.disableCallCount
+        fixture.controller.setAutoBrightnessTakeoverEnabled(true)
+        #expect(fixture.autoBrightnessToggle.disableCallCount == disableCountAfterOff + 1)
+        #expect(fixture.controller.currentState.autoBrightnessTakeoverEnabled == true)
+    }
+
+    @Test("with the takeover switched off before start, auto-brightness is never disabled at launch")
+    func takeoverDisabledSkipsDisableAtStart() {
+        let fixture = makeFixture(storedAutoBrightnessTakeoverEnabled: false)
+        #expect(fixture.autoBrightnessToggle.disableCallCount == 0)
+    }
+
+    @Test("autoBrightnessUnavailable is set once start() finds the private symbol couldn't be loaded")
+    func flagsAutoBrightnessUnavailable() {
+        let fixture = makeFixture(stubbedIsAutoBrightnessEnabled: nil)
+        #expect(fixture.controller.autoBrightnessUnavailable == true)
+    }
+
+    // MARK: External brightness sync (Control Center, native keys with Key Remap off, macOS dimming)
+
+    @Test("a key press first syncs from the display: reading 30 while state is 80 lands a raise on 35")
+    func keyPressSyncsFromDisplayFirst() {
+        let fixture = makeFixture(storedPercentage: 80, stubbedCurrentNominalPercentage: 30)
+        fixture.controller.handleKeyPress(.raise)
+        #expect(fixture.controller.currentState.percentage == 35)
+    }
+
+    @Test("while boosted, a Nominal reading of 100 (BrightBoi's own write) is not treated as an external change")
+    func boostedReadingOfOwnNominalWriteIsIgnored() {
+        let fixture = makeFixture(storedPercentage: 150, stubbedCurrentNominalPercentage: 100)
+        fixture.controller.syncFromDisplay()
+        #expect(fixture.controller.currentState.percentage == 150)
+        #expect(fixture.controller.currentState.isBoosted == true)
+        #expect(fixture.displayBrightness.adoptExternalNominalCallCount == 0)
+    }
+
+    @Test("while boosted, a real external drop to 30 adopts it, disengages Boost once, and persists it")
+    func boostedExternalDropAdoptsAndDisengages() {
+        let fixture = makeFixture(storedPercentage: 150, stubbedCurrentNominalPercentage: 30)
+        fixture.controller.syncFromDisplay()
+        #expect(fixture.controller.currentState.percentage == 30)
+        #expect(fixture.controller.currentState.isBoosted == false)
+        #expect(fixture.displayBrightness.adoptExternalNominalCallCount == 1)
+
+        fixture.controller.flushPendingPersist()
+        #expect(fixture.persistence.savedPercentages == [30])
+    }
+
+    @Test("nothing changes when the display can't be read")
+    func syncDoesNothingWhenDisplayUnreadable() {
+        let fixture = makeFixture(storedPercentage: 80, stubbedCurrentNominalPercentage: nil)
+        fixture.controller.syncFromDisplay()
+        #expect(fixture.controller.currentState.percentage == 80)
+    }
+
+    @Test("a reading within tolerance of the current value is not treated as a change")
+    func syncIgnoresReadingWithinTolerance() {
+        let fixture = makeFixture(storedPercentage: 80, stubbedCurrentNominalPercentage: 82)
+        fixture.controller.syncFromDisplay()
+        #expect(fixture.controller.currentState.percentage == 80)
+    }
+
+    // MARK: Drag-path dedupe (the slider's DragGesture)
+
+    @Test("a drag update that resolves to the current value produces no extra display apply")
+    func dragUpdateToCurrentValueSkipsApply() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        let countBefore = fixture.displayBrightness.appliedPercentages.count
+        // 51 and 52 both resolve to 50 on the 5% grid.
+        fixture.controller.setPercentageFromDrag(51)
+        fixture.controller.setPercentageFromDrag(52)
+        #expect(fixture.displayBrightness.appliedPercentages.count == countBefore)
+        #expect(fixture.controller.currentState.percentage == 50)
+    }
+
+    @Test("a drag update that resolves to a new value still applies")
+    func dragUpdateToNewValueStillApplies() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        fixture.controller.setPercentageFromDrag(60)
+        #expect(fixture.controller.currentState.percentage == 60)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 60)
+    }
+
+    @Test("setPercentageFromDrag ignores NaN")
+    func dragUpdateIgnoresNaN() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        fixture.controller.setPercentageFromDrag(.nan)
+        #expect(fixture.controller.currentState.percentage == 50)
+    }
+
+    @Test("a quick-set tap for the current value still re-applies it — the user's only way to resync after an outside change")
+    func quickSetForCurrentValueStillApplies() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        let countBefore = fixture.displayBrightness.appliedPercentages.count
+        fixture.controller.setPercentage(50)
+        #expect(fixture.displayBrightness.appliedPercentages.count == countBefore + 1)
+    }
+
+    @Test("exactly one save happens after the debounce, even if quitting flushes right after")
+    func exactlyOneSaveAfterDebounceThenTermination() async throws {
+        let fixture = makeFixture(persistenceDebounceInterval: 0.05)
+        fixture.controller.setPercentage(60)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(fixture.persistence.savedPercentages == [60])
+
+        fixture.controller.flushPendingPersist()
+        #expect(fixture.persistence.savedPercentages == [60])
     }
 
     // MARK: Key Remap
@@ -338,10 +578,41 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.isBoosted == true)
     }
 
-    @Test("with no persisted value, starts at 0%")
-    func startsAtZeroWithNoPersistedValue() {
-        let fixture = makeFixture(storedPercentage: nil)
+    @Test("adopts the current display brightness when nothing is persisted, instead of jumping to a fixed default")
+    func adoptsDisplayBrightnessWhenNothingPersisted() {
+        let fixture = makeFixture(storedPercentage: nil, stubbedCurrentNominalPercentage: 37)
+        // 37 rounds to 35 on the 5% grid.
+        #expect(fixture.controller.currentState.percentage == 35)
+        #expect(fixture.displayBrightness.appliedPercentages.isEmpty)
+
+        fixture.controller.flushPendingPersist()
+        #expect(fixture.persistence.savedPercentages == [35])
+    }
+
+    @Test("adopts a genuine 0 from the display as-is — the panel is already there")
+    func adoptsZeroFromDisplayAsIs() {
+        let fixture = makeFixture(storedPercentage: nil, stubbedCurrentNominalPercentage: 0)
         #expect(fixture.controller.currentState.percentage == 0)
+        #expect(fixture.displayBrightness.appliedPercentages.isEmpty)
+    }
+
+    @Test("falls back to 100% when nothing is persisted and the display can't be read either")
+    func fallsBackTo100WhenDisplayCannotBeRead() {
+        let fixture = makeFixture(storedPercentage: nil, stubbedCurrentNominalPercentage: nil)
+        #expect(fixture.controller.currentState.percentage == 100)
+        #expect(fixture.displayBrightness.appliedPercentages == [100])
+    }
+
+    @Test("a persisted 0% restores to the 10% floor, not a dark screen, at launch")
+    func persistedZeroRestoresToFloor() {
+        let fixture = makeFixture(storedPercentage: 0)
+        #expect(fixture.controller.currentState.percentage == 10)
+    }
+
+    @Test("the display-adoption floor never applies — a low adopted reading is kept as found")
+    func adoptionFloorNeverAppliesToDisplayReading() {
+        let fixture = makeFixture(storedPercentage: nil, stubbedCurrentNominalPercentage: 3)
+        #expect(fixture.controller.currentState.percentage == 5)
     }
 
     @Test("debounces persistence: rapid changes coalesce into a single save of the final value")
@@ -542,12 +813,42 @@ struct BrightnessControllerTests {
         let fixture = makeFixture()
         fixture.controller.setBoostCeiling(50)
         #expect(fixture.controller.currentState.boostCeiling == 100)
+        #expect(fixture.persistence.storedBoostCeiling == 100)
     }
 
     @Test("setBoostCeiling never goes above 200%")
     func setBoostCeilingClampsToCeiling() {
         let fixture = makeFixture()
         fixture.controller.setBoostCeiling(250)
+        #expect(fixture.controller.currentState.boostCeiling == 200)
+        #expect(fixture.persistence.storedBoostCeiling == 200)
+    }
+
+    @Test("setBoostCeiling snaps an off-grid value to the nearest 5%, tie breaking down")
+    func setBoostCeilingSnapsToGrid() {
+        let fixture = makeFixture()
+        fixture.controller.setBoostCeiling(142.5)
+        #expect(fixture.controller.currentState.boostCeiling == 140)
+    }
+
+    @Test("an off-grid ceiling stored from a hand-edited default snaps to the grid on init, so setPercentage can't resolve above it")
+    func offGridStoredCeilingSnapsOnInit() {
+        let fixture = makeFixture(storedBoostCeiling: 138)
+        #expect(fixture.controller.currentState.boostCeiling == 140)
+        fixture.controller.setPercentage(200)
+        #expect(fixture.controller.currentState.percentage == 140)
+    }
+
+    @Test("setBoostCeiling ignores NaN")
+    func setBoostCeilingIgnoresNaN() {
+        let fixture = makeFixture()
+        fixture.controller.setBoostCeiling(.nan)
+        #expect(fixture.controller.currentState.boostCeiling == 200)
+    }
+
+    @Test("a NaN stored ceiling is discarded, falling back to the default 200%")
+    func nanStoredCeilingFallsBackToDefault() {
+        let fixture = makeFixture(storedBoostCeiling: .nan)
         #expect(fixture.controller.currentState.boostCeiling == 200)
     }
 
@@ -623,10 +924,12 @@ struct BrightnessControllerTests {
         fixture.controller.setKeyRemapEnabled(false)
         #expect(fixture.keyTap.stopCallCount == 1)
         #expect(fixture.controller.currentState.keyRemapEnabled == false)
+        #expect(fixture.persistence.storedKeyRemapEnabled == false)
 
         fixture.controller.setKeyRemapEnabled(true)
         #expect(fixture.keyTap.startCallCount == 2)
         #expect(fixture.controller.currentState.keyRemapEnabled == true)
+        #expect(fixture.persistence.storedKeyRemapEnabled == true)
     }
 
     @Test("disabling the Key Remap stops key presses from driving the controller")
@@ -661,6 +964,18 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.keyRemapShortcut == newShortcut)
         #expect(fixture.keyTap.lastStartedRemap == newShortcut)
         #expect(fixture.keyTap.startCallCount == 2)
+        #expect(fixture.persistence.storedKeyRemapShortcut == newShortcut)
+    }
+
+    @Test("with a stored shortcut that fails to decode, init falls back to F1/F2 without ever saving it back")
+    func undecodableStoredShortcutNeverGetsSavedBack() {
+        // The fake's loadKeyRemapShortcut simply returns whatever's stored,
+        // so `nil` here stands in for `RealBrightnessPersistence` having
+        // failed to decode the on-disk blob (see `RealBrightnessPersistenceTests`
+        // for that decode failure itself).
+        let fixture = makeFixture(storedKeyRemapShortcut: nil)
+        #expect(fixture.controller.currentState.keyRemapShortcut == .defaultShortcut)
+        #expect(fixture.persistence.storedKeyRemapShortcut == nil)
     }
 
     @Test("changing the Key Remap shortcut while disabled persists it without starting the tap")
@@ -742,5 +1057,112 @@ struct BrightnessControllerTests {
         let fixture = makeFixture(stubbedThermalState: .critical)
         fixture.controller.setPercentage(150)
         #expect(fixture.controller.thermalAdvisory == .init(requestedPercentage: 150, deliveredPercentage: 110))
+    }
+
+    @Test("the delivered estimate is floored at 100%, never claiming delivery below the Nominal ceiling")
+    func thermalAdvisoryDeliveredFloorsAt100() {
+        let critical = makeFixture(stubbedThermalState: .critical)
+        critical.controller.setPercentage(105)
+        #expect(critical.controller.thermalAdvisory == .init(requestedPercentage: 105, deliveredPercentage: 100))
+
+        let critical180 = makeFixture(stubbedThermalState: .critical)
+        critical180.controller.setPercentage(180)
+        #expect(critical180.controller.thermalAdvisory == .init(requestedPercentage: 180, deliveredPercentage: 140))
+    }
+
+    // MARK: Advisories live-refresh without a brightness change
+
+    @Test("the battery advisory flips live when the power source changes, with no setPercentage call")
+    func batteryAdvisoryFlipsLiveOnPowerSourceChange() {
+        let fixture = makeFixture(isOnBatteryPower: false)
+        fixture.controller.setPercentage(185)
+        #expect(fixture.controller.batteryAdvisoryVisible == false)
+
+        fixture.powerSource.stubbedIsOnBatteryPower = true
+        fixture.powerSource.simulateChange()
+        #expect(fixture.controller.batteryAdvisoryVisible == true)
+    }
+
+    @Test("Observation fires when the battery advisory flips live")
+    func observationFiresOnLiveBatteryChange() {
+        let fixture = makeFixture(isOnBatteryPower: false)
+        fixture.controller.setPercentage(185)
+        nonisolated(unsafe) var fired = false
+        withObservationTracking {
+            _ = fixture.controller.isOnBatteryPower
+        } onChange: {
+            fired = true
+        }
+        fixture.powerSource.stubbedIsOnBatteryPower = true
+        fixture.powerSource.simulateChange()
+        #expect(fired == true)
+    }
+
+    @Test("the thermal advisory flips live when the thermal state changes, with no setPercentage call")
+    func thermalAdvisoryFlipsLiveOnThermalStateChange() {
+        let fixture = makeFixture(stubbedThermalState: .nominal)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.thermalAdvisory == nil)
+
+        fixture.thermalState.stubbedThermalState = .critical
+        fixture.thermalState.simulateChange()
+        #expect(fixture.controller.thermalAdvisory != nil)
+    }
+
+    @Test("charge-level ticks on battery with no actual change don't re-notify Observation")
+    func unchangedPowerStateDoesNotReNotify() {
+        let fixture = makeFixture(isOnBatteryPower: true)
+        nonisolated(unsafe) var notified = false
+        withObservationTracking {
+            _ = fixture.controller.isOnBatteryPower
+        } onChange: {
+            notified = true
+        }
+        // Same value as the stub was already seeded with — a charge-percentage
+        // tick that doesn't flip on-battery/off-battery.
+        fixture.powerSource.simulateChange()
+        #expect(notified == false)
+    }
+
+    // MARK: Low Power Mode advisory
+
+    @Test("boosted with Low Power Mode on shows the advisory, on either power source")
+    func lowPowerModeAdvisoryVisibleWhileBoosted() {
+        let fixture = makeFixture(isLowPowerModeEnabled: true)
+        fixture.controller.setPercentage(120)
+        #expect(fixture.controller.isLowPowerModeAdvisoryVisible == true)
+    }
+
+    @Test("at or below 100% with Low Power Mode on, no advisory shows")
+    func lowPowerModeAdvisoryHiddenWhenNotBoosted() {
+        let fixture = makeFixture(isLowPowerModeEnabled: true)
+        fixture.controller.setPercentage(100)
+        #expect(fixture.controller.isLowPowerModeAdvisoryVisible == false)
+    }
+
+    @Test("boosted, on battery, above 170%, with Low Power Mode on: only the Low Power Mode advisory shows")
+    func onlyLowPowerModeAdvisoryShowsWhenBothConditionsHold() {
+        let fixture = makeFixture(isOnBatteryPower: true, isLowPowerModeEnabled: true)
+        fixture.controller.setPercentage(185)
+        #expect(fixture.controller.isLowPowerModeAdvisoryVisible == true)
+        #expect(fixture.controller.batteryAdvisoryVisible == false)
+    }
+
+    @Test("Low Power Mode toggling live updates the advisory without any brightness change")
+    func lowPowerModeAdvisoryFlipsLiveOnToggle() {
+        let fixture = makeFixture(isLowPowerModeEnabled: false)
+        fixture.controller.setPercentage(120)
+        #expect(fixture.controller.isLowPowerModeAdvisoryVisible == false)
+
+        fixture.powerSource.stubbedIsLowPowerModeEnabled = true
+        fixture.powerSource.simulateChange()
+        #expect(fixture.controller.isLowPowerModeAdvisoryVisible == true)
+    }
+
+    @Test("Low Power Mode never clamps or pauses the slider")
+    func lowPowerModeNeverClampsBrightness() {
+        let fixture = makeFixture(isLowPowerModeEnabled: true)
+        fixture.controller.setPercentage(190)
+        #expect(fixture.controller.currentState.percentage == 190)
     }
 }

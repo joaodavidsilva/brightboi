@@ -30,6 +30,24 @@ final class BrightnessController {
     nonisolated static let nominalCeilingPercentage: Double = 100
     nonisolated static let percentageGranularity: Double = 5
 
+    /// The floor a *persisted* percentage restores to at launch — never
+    /// applied to a live drag/key press, which can still reach 0, and never
+    /// applied when nothing was persisted (see `PercentageSource` below).
+    /// Protects against a saved 0% (the backlight minimum, e.g. after using
+    /// it to turn the panel off) silently reapplying a dark screen at every
+    /// login; one key press or slider touch recovers from either value, but
+    /// 10% never needs recovering from in the first place.
+    nonisolated static let minimumRestoredPercentage: Double = 10
+
+    /// How far the display's live Nominal reading may drift from what
+    /// BrightBoi last wrote before `syncFromDisplay()` treats it as a real
+    /// external change rather than read-back noise or its own rounding.
+    /// `DisplayServicesGetBrightness` reports values like `0.8124999`, and
+    /// native keys move in 1/16ths (6.25%) — both comfortably clear this;
+    /// resolving to the 5% grid can differ from the raw reading by at most
+    /// exactly this much (a tie), which must not itself count as a change.
+    nonisolated static let displaySyncTolerancePercentage: Double = 2.5
+
     /// Absolute threshold on the 0...200 scale, not relative to a lowered
     /// Boost Ceiling — if the ceiling is already below this, the battery
     /// advisory simply never fires. See the spec's Battery advisory decision.
@@ -54,6 +72,7 @@ final class BrightnessController {
         var boostCeiling: Double
         var keyRemapEnabled: Bool
         var keyRemapShortcut: KeyRemapShortcut
+        var autoBrightnessTakeoverEnabled: Bool
 
         /// `true` once an attempt to go past 100% was refused because
         /// another process already holds this display's EDR headroom — see
@@ -76,15 +95,47 @@ final class BrightnessController {
         case lower
     }
 
+    /// How the level in `currentState` at the end of `init` was decided —
+    /// only relevant to `start()`, which uses it to skip the initial
+    /// display write when the value already came from the display itself.
+    private enum PercentageSource {
+        /// Restored from a previous session.
+        case persisted
+        /// Nothing was persisted; adopted from the display's own current
+        /// reading instead of jumping to a fixed default.
+        case adoptedFromDisplay
+        /// Nothing was persisted and the display couldn't be read either.
+        case fallbackDefault
+    }
+
     /// The thermal-throttle advisory's content — see ADR-0005: `deliveredPercentage`
     /// is a heuristic estimate (`.serious` → requested − 20, `.critical` →
-    /// requested − 40), never a measurement.
+    /// requested − 40, floored at 100%), never a measurement.
     struct ThermalAdvisory: Equatable {
         var requestedPercentage: Double
         var deliveredPercentage: Double
     }
 
     private(set) var currentState: State
+
+    /// The three system facts the battery/thermal/Low-Power-Mode advisories
+    /// are derived from, kept as their own tracked stored properties (rather
+    /// than read fresh from the providers on every access) so `@Observable`
+    /// actually notifies SwiftUI when one of them changes on its own —
+    /// unplugging the charger, the Mac heating up, Low Power Mode being
+    /// toggled — with no brightness change to otherwise trigger a rebuild.
+    /// Seeded once at init, kept current afterwards by the observers
+    /// `start()` registers.
+    private(set) var isOnBatteryPower: Bool
+    private(set) var isLowPowerModeEnabled: Bool
+    private(set) var thermalState: ProcessInfo.ThermalState
+
+    /// `true` once `start()` has found `AutoBrightnessToggling`'s private
+    /// symbol couldn't be loaded — Settings shows a quiet note rather than
+    /// silently behaving as if the takeover (and its restore-on-quit) had
+    /// happened when neither actually could. Defaults to `false` until
+    /// `start()` runs, which is always immediately after construction.
+    private(set) var autoBrightnessUnavailable = false
 
     /// Notified after every recognized key press is applied — including a
     /// press that clamps at the 0%/200% ends and so leaves the percentage
@@ -101,15 +152,17 @@ final class BrightnessController {
     private let persistence: BrightnessPersisting
     private let keyTap: KeyTapControlling
     private let powerSource: PowerSourceProviding
-    private let thermalState: ThermalStateProviding
+    private let thermalStateProvider: ThermalStateProviding
     private let bundleLocation: BundleLocationProviding
 
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
     private let supportsBoost: Bool
+    private let percentageSource: PercentageSource
     private var boostCeiling: Double
     private var keyRemapEnabled: Bool
     private var keyRemapShortcut: KeyRemapShortcut
+    private var autoBrightnessTakeoverEnabled: Bool
     private var hasStarted = false
     private var lastLaunchAtLoginError: String?
     @ObservationIgnored
@@ -120,7 +173,10 @@ final class BrightnessController {
     /// item list, auto-brightness or the key tap. That happens once in
     /// `start()`, so constructing the controller early (SwiftUI's
     /// `MenuBarExtra`/`Settings` scenes need it at `body` time, before the
-    /// app has finished launching) is always safe.
+    /// app has finished launching) is always safe. Reading the display's own
+    /// current brightness here (`DisplayBrightnessProviding.currentNominalPercentage()`)
+    /// is likewise a plain read with no side effect — the same category as
+    /// `supportsExtendedBrightness()` below, already called from here.
     init(
         displayBrightness: DisplayBrightnessProviding,
         autoBrightnessToggle: AutoBrightnessToggling,
@@ -139,7 +195,7 @@ final class BrightnessController {
         self.persistence = persistence
         self.keyTap = keyTap
         self.powerSource = powerSource
-        self.thermalState = thermalState
+        self.thermalStateProvider = thermalState
         self.bundleLocation = bundleLocation
         self.keyStepPercentage = keyStepPercentage
         self.persistenceDebounceInterval = persistenceDebounceInterval
@@ -151,8 +207,10 @@ final class BrightnessController {
         self.supportsBoost = supportsBoost
 
         // `nil` (fresh install) defaults to `maximumPercentage`, identical
-        // to today's fixed 200% ceiling until deliberately lowered.
-        let boostCeiling = Self.clampedBoostCeiling(persistence.loadBoostCeiling() ?? Self.maximumPercentage)
+        // to today's fixed 200% ceiling until deliberately lowered. Snapped
+        // to the 5% grid so a hand-edited off-grid value can't let
+        // `setPercentage` resolve above it.
+        let boostCeiling = Self.clampedBoostCeiling(persistence.loadBoostCeiling().flatMap { $0.isFinite ? $0 : nil } ?? Self.maximumPercentage)
         self.boostCeiling = boostCeiling
 
         let keyRemapEnabled = persistence.loadKeyRemapEnabled() ?? true
@@ -161,13 +219,45 @@ final class BrightnessController {
         let keyRemapShortcut = persistence.loadKeyRemapShortcut() ?? .defaultShortcut
         self.keyRemapShortcut = keyRemapShortcut
 
+        let autoBrightnessTakeoverEnabled = persistence.loadAutoBrightnessTakeoverEnabled() ?? true
+        self.autoBrightnessTakeoverEnabled = autoBrightnessTakeoverEnabled
+
         let boostAwareCeiling = supportsBoost ? boostCeiling : Self.nominalCeilingPercentage
-        let restoredPercentage = Self.resolvedPercentage(persistence.loadPercentage() ?? Self.minimumPercentage, effectiveMaximum: boostAwareCeiling)
+
+        // Fresh install (nothing persisted): adopt the display's own
+        // current level rather than jumping to a fixed default — that's a
+        // jarring first impression and, at night, briefly blinding. Falls
+        // back to `nominalCeilingPercentage` only when the display can't be
+        // read either (e.g. clamshell mode, where `resolveBuiltInDisplayID`
+        // falls back to the external display). A *persisted* value is
+        // floored at `minimumRestoredPercentage`; an adopted display reading
+        // is taken exactly as found, including a genuine 0 — the panel's
+        // already at that level, so there's nothing to protect against.
+        let source: PercentageSource
+        let rawPercentage: Double
+        if let persisted = persistence.loadPercentage(), persisted.isFinite {
+            source = .persisted
+            rawPercentage = max(persisted, Self.minimumRestoredPercentage)
+        } else if let displayed = displayBrightness.currentNominalPercentage(), displayed.isFinite {
+            source = .adoptedFromDisplay
+            rawPercentage = displayed
+        } else {
+            source = .fallbackDefault
+            rawPercentage = Self.nominalCeilingPercentage
+        }
+        self.percentageSource = source
+
+        let restoredPercentage = Self.resolvedPercentage(rawPercentage, effectiveMaximum: boostAwareCeiling)
         // `nil` (fresh install) defaults to `true`, matching the app's
         // previous unconditional registration behavior for upgrading users.
         // `start()` reconciles this against the real login-item status
         // before it ever reaches a view.
         let launchAtLoginEnabled = persistence.loadLaunchAtLoginEnabled() ?? true
+
+        self.isOnBatteryPower = powerSource.isOnBatteryPower()
+        self.isLowPowerModeEnabled = powerSource.isLowPowerModeEnabled()
+        self.thermalState = thermalState.currentThermalState()
+
         self.currentState = Self.state(
             for: restoredPercentage,
             supportsBoost: supportsBoost,
@@ -177,38 +267,116 @@ final class BrightnessController {
             boostCeiling: boostCeiling,
             keyRemapEnabled: keyRemapEnabled,
             keyRemapShortcut: keyRemapShortcut,
+            autoBrightnessTakeoverEnabled: autoBrightnessTakeoverEnabled,
             boostBlockedByOtherApp: false
         )
     }
 
-    /// Fires every session-start-only side effect exactly once: applies the
-    /// restored percentage to the real display, disables macOS's native
-    /// auto-brightness, reconciles/attempts login-item registration, and
-    /// starts the key tap. Called from
+    /// Fires every session-start-only side effect exactly once: records the
+    /// real auto-brightness setting (once, ever, per continuous run), takes
+    /// over from it, applies the restored percentage to the real display
+    /// (skipped when that percentage was adopted from the display itself —
+    /// see `PercentageSource`), reconciles/attempts login-item registration,
+    /// starts the key tap, and starts observing the power/thermal state the
+    /// advisories depend on. Called from
     /// `AppDelegate.applicationDidFinishLaunching`, once `NSApp` has
     /// actually finished launching. Calling it again is a no-op.
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
 
-        applyToDisplay(percentage: currentState.percentage)
-        autoBrightnessToggle.disableAutoBrightness()
+        // Record before taking over, so the value reflects what the user
+        // actually had — guarded by "only if nothing's recorded yet" so a
+        // crash between this and `restoreSystemStateOnTermination()` can't
+        // have the *next* launch overwrite the true original with the
+        // now-disabled value it would read then. The read itself always
+        // happens (it's what tells `autoBrightnessUnavailable` apart from a
+        // genuinely-enabled system), only the save is guarded.
+        let systemAutoBrightnessEnabled = autoBrightnessToggle.isAutoBrightnessEnabled()
+        autoBrightnessUnavailable = systemAutoBrightnessEnabled == nil
+        if persistence.loadAutoBrightnessWasEnabledOriginally() == nil {
+            persistence.save(autoBrightnessWasEnabledOriginally: systemAutoBrightnessEnabled ?? true)
+        }
+        if autoBrightnessTakeoverEnabled {
+            autoBrightnessToggle.disableAutoBrightness()
+        }
+
+        if percentageSource == .adoptedFromDisplay {
+            // Already the level the display is showing — applying it back
+            // would be a no-op at best, and the rounding difference (at
+            // most `displaySyncTolerancePercentage`) is invisible. Still
+            // schedule a save so the *next* launch has a stored value to
+            // restore instead of adopting again.
+            schedulePersist(currentState.percentage)
+        } else {
+            applyToDisplay(percentage: currentState.percentage)
+        }
+
         syncLaunchAtLoginAtStart()
         if keyRemapEnabled {
             startKeyTap(remap: keyRemapShortcut)
         }
+
+        powerSource.startObserving { [weak self] in self?.refreshObservedPowerState() }
+        thermalStateProvider.startObserving { [weak self] in self?.refreshObservedThermalState() }
     }
 
     func setPercentage(_ percentage: Double) {
+        guard percentage.isFinite else { return }
         let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: currentEffectiveMaximum)
         applyToDisplay(percentage: resolved)
         schedulePersist(currentState.percentage)
     }
 
+    /// Same resolution as `setPercentage`, but skips the apply and the
+    /// persistence reschedule when it resolves to the value already
+    /// showing — used only by the slider's drag gesture, which reports
+    /// 60-120 pointer events a second and would otherwise re-apply the
+    /// unchanged value (while boosted, rebuilding and rewriting the gamma
+    /// table) on nearly every one of them. Not used by the quick-set
+    /// buttons or a key press: tapping "100%" again, or a key step landing
+    /// back where it started, is currently the user's only way to
+    /// re-assert BrightBoi's level after something else changed it outside
+    /// the app (Control Center, a display reconfiguration, another
+    /// utility) — a blanket guard here would turn that into a no-op.
+    func setPercentageFromDrag(_ percentage: Double) {
+        guard percentage.isFinite else { return }
+        let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: currentEffectiveMaximum)
+        guard resolved != currentState.percentage else { return }
+        applyToDisplay(percentage: resolved)
+        schedulePersist(currentState.percentage)
+    }
+
     func handleKeyPress(_ press: KeyPress) {
+        syncFromDisplay()
         let delta = press == .raise ? keyStepPercentage : -keyStepPercentage
         setPercentage(currentState.percentage + delta)
         onKeyPress?(press, currentState)
+    }
+
+    /// Re-reads the display's live Nominal brightness and adopts it when
+    /// it's diverged from what BrightBoi itself last put there — a Control
+    /// Center drag, a native key press that bypassed Key Remap, or macOS's
+    /// own dimming. Compared against the *Nominal* component of the current
+    /// state (`min(currentState.percentage, 100)`), since while boosted
+    /// BrightBoi always writes 100% (1.0) to Nominal itself — reading 100
+    /// back while state is 150 is expected, not an external change, and
+    /// must never disengage Boost. Never writes Nominal itself, so an
+    /// on-demand call here can't fight a Control Center drag still in
+    /// progress; called at the start of `handleKeyPress` (which is about to
+    /// write anyway, through its own `setPercentage` call right after) and
+    /// from the popover/Settings appearing.
+    func syncFromDisplay() {
+        guard let reading = displayBrightness.currentNominalPercentage(), reading.isFinite else { return }
+        let expectedNominal = min(currentState.percentage, Self.nominalCeilingPercentage)
+        guard abs(reading - expectedNominal) > Self.displaySyncTolerancePercentage else { return }
+
+        let adopted = Self.roundToGranularity(Self.clamp(reading, to: Self.nominalCeilingPercentage))
+        if currentState.isBoosted {
+            displayBrightness.adoptExternalNominal()
+        }
+        currentState = updatedState(percentage: adopted)
+        schedulePersist(adopted)
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
@@ -254,6 +422,7 @@ final class BrightnessController {
             boostCeiling: boostCeiling,
             keyRemapEnabled: keyRemapEnabled,
             keyRemapShortcut: keyRemapShortcut,
+            autoBrightnessTakeoverEnabled: autoBrightnessTakeoverEnabled,
             boostBlockedByOtherApp: currentState.boostBlockedByOtherApp
         )
     }
@@ -264,6 +433,7 @@ final class BrightnessController {
     /// brightness clamps brightness down immediately, via the `setPercentage`
     /// re-resolve below.
     func setBoostCeiling(_ percentage: Double) {
+        guard percentage.isFinite else { return }
         let clamped = Self.clampedBoostCeiling(percentage)
         boostCeiling = clamped
         persistence.save(boostCeiling: clamped)
@@ -298,24 +468,55 @@ final class BrightnessController {
         }
     }
 
-    /// Advisory only — never blocks or clamps the slider. Read fresh on every
-    /// access (not cached in `currentState`), since power-source state can
-    /// change without any brightness change to trigger a state rebuild.
+    /// Drives the Settings toggle "Turn off macOS auto-brightness while
+    /// BrightBoi runs" (on by default). Switching it off restores
+    /// auto-brightness immediately — but only if the recorded original had
+    /// it on, so this can never turn *on* a setting the user had off before
+    /// BrightBoi ever ran. Switching it back on disables it again, the same
+    /// takeover `start()` performs at launch.
+    func setAutoBrightnessTakeoverEnabled(_ enabled: Bool) {
+        autoBrightnessTakeoverEnabled = enabled
+        persistence.save(autoBrightnessTakeoverEnabled: enabled)
+        currentState = updatedState(percentage: currentState.percentage)
+        if enabled {
+            autoBrightnessToggle.disableAutoBrightness()
+        } else if persistence.loadAutoBrightnessWasEnabledOriginally() ?? true {
+            autoBrightnessToggle.enableAutoBrightness()
+        }
+    }
+
+    /// Advisory only — never blocks or clamps the slider. Suppressed
+    /// whenever the Low Power Mode advisory is showing, so a user above
+    /// 170% on battery with Low Power Mode on sees one banner, not two
+    /// near-duplicate power warnings.
     var batteryAdvisoryVisible: Bool {
-        currentState.percentage > Self.batteryAdvisoryThresholdPercentage && powerSource.isOnBatteryPower()
+        currentState.percentage > Self.batteryAdvisoryThresholdPercentage && isOnBatteryPower && !isLowPowerModeAdvisoryVisible
+    }
+
+    /// Advisory only — never pauses or blocks Boost. Apple documents Low
+    /// Power Mode as reducing screen brightness among its energy-saving
+    /// measures; this only surfaces that Boost is working against it, on
+    /// either power source, since Low Power Mode can be on while plugged in.
+    var isLowPowerModeAdvisoryVisible: Bool {
+        currentState.isBoosted && isLowPowerModeEnabled
     }
 
     /// `nil` unless boosted and the system is under thermal pressure.
-    /// Advisory only — never blocks or clamps the slider. Read fresh on every
-    /// access for the same reason as `batteryAdvisoryVisible` above.
+    /// Advisory only — never blocks or clamps the slider.
     var thermalAdvisory: ThermalAdvisory? {
         guard currentState.isBoosted else { return nil }
         let requested = currentState.percentage
-        switch thermalState.currentThermalState() {
+        switch thermalState {
         case .serious:
-            return ThermalAdvisory(requestedPercentage: requested, deliveredPercentage: requested - Self.thermalSeriousDeliveredOffset)
+            return ThermalAdvisory(
+                requestedPercentage: requested,
+                deliveredPercentage: max(requested - Self.thermalSeriousDeliveredOffset, Self.nominalCeilingPercentage)
+            )
         case .critical:
-            return ThermalAdvisory(requestedPercentage: requested, deliveredPercentage: requested - Self.thermalCriticalDeliveredOffset)
+            return ThermalAdvisory(
+                requestedPercentage: requested,
+                deliveredPercentage: max(requested - Self.thermalCriticalDeliveredOffset, Self.nominalCeilingPercentage)
+            )
         case .nominal, .fair:
             return nil
         @unknown default:
@@ -333,6 +534,25 @@ final class BrightnessController {
         pendingPersistWorkItem.cancel()
         persistence.save(percentage: currentState.percentage)
         self.pendingPersistWorkItem = nil
+    }
+
+    /// Called from `AppDelegate.applicationWillTerminate`, alongside
+    /// `flushPendingPersist()`. Restores whatever this session changed that
+    /// would otherwise outlive the app: if Boost is engaged, the scaled
+    /// gamma table first (so the light sensor's own ramp on next login
+    /// doesn't land on top of a still-scaled table), then macOS's own
+    /// auto-brightness setting, only if the recorded original had it on.
+    /// Clears the recorded original afterwards so the next launch records a
+    /// fresh one instead of continuing to protect a value that's already
+    /// been restored.
+    func restoreSystemStateOnTermination() {
+        if currentState.isBoosted {
+            displayBrightness.adoptExternalNominal()
+        }
+        if persistence.loadAutoBrightnessWasEnabledOriginally() ?? true {
+            autoBrightnessToggle.enableAutoBrightness()
+        }
+        persistence.clearAutoBrightnessWasEnabledOriginally()
     }
 
     private func startKeyTap(remap: KeyRemapShortcut) {
@@ -353,6 +573,30 @@ final class BrightnessController {
         let blockedByOtherApp = outcome == .boostBlockedByOtherApp
         let effectivePercentage = outcome == .applied ? percentage : min(percentage, Self.nominalCeilingPercentage)
         currentState = updatedState(percentage: effectivePercentage, boostBlockedByOtherApp: blockedByOtherApp)
+    }
+
+    /// Re-reads `isOnBatteryPower`/`isLowPowerModeEnabled` and assigns only
+    /// what actually changed — the IOKit callback fires on every
+    /// power-source event, including a charge-percentage tick, and
+    /// `@Observable`'s synthesized setter notifies on every assignment
+    /// regardless of whether the value is equal, which would otherwise
+    /// re-render the popover every minute on battery.
+    private func refreshObservedPowerState() {
+        let onBattery = powerSource.isOnBatteryPower()
+        if onBattery != isOnBatteryPower {
+            isOnBatteryPower = onBattery
+        }
+        let lowPowerMode = powerSource.isLowPowerModeEnabled()
+        if lowPowerMode != isLowPowerModeEnabled {
+            isLowPowerModeEnabled = lowPowerMode
+        }
+    }
+
+    private func refreshObservedThermalState() {
+        let state = thermalStateProvider.currentThermalState()
+        if state != thermalState {
+            thermalState = state
+        }
     }
 
     // MARK: - Launch at login
@@ -452,6 +696,7 @@ final class BrightnessController {
             boostCeiling: boostCeiling,
             keyRemapEnabled: keyRemapEnabled,
             keyRemapShortcut: keyRemapShortcut,
+            autoBrightnessTakeoverEnabled: autoBrightnessTakeoverEnabled,
             boostBlockedByOtherApp: boostBlockedByOtherApp ?? currentState.boostBlockedByOtherApp
         )
     }
@@ -459,8 +704,9 @@ final class BrightnessController {
     private func schedulePersist(_ percentage: Double) {
         pendingPersistWorkItem?.cancel()
 
-        let workItem = DispatchWorkItem { [persistence = self.persistence] in
+        let workItem = DispatchWorkItem { [weak self, persistence = self.persistence] in
             persistence.save(percentage: percentage)
+            self?.pendingPersistWorkItem = nil
         }
         pendingPersistWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + persistenceDebounceInterval, execute: workItem)
@@ -486,18 +732,27 @@ final class BrightnessController {
     /// Rounds to the nearest multiple of `percentageGranularity`, ties
     /// breaking down (e.g. 137.5 -> 135, not 140) — every slider drag, key
     /// press, and restored-from-persistence value goes through this so the
-    /// physical keys and the slider always land on the same grid.
+    /// physical keys and the slider always land on the same grid. The
+    /// trailing `+ 0.0` turns a `-0.0` result (e.g. rounding 0 or 2) into
+    /// `+0.0` — cosmetically identical (`-0.0 == 0`), but keeps every state,
+    /// saved value and display write free of a sign bit nothing downstream
+    /// expects.
     private static func roundToGranularity(_ percentage: Double) -> Double {
         let steps = ((percentage / percentageGranularity) - 0.5).rounded(.up)
-        return steps * percentageGranularity
+        return steps * percentageGranularity + 0.0
     }
 
     private static func resolvedPercentage(_ percentage: Double, effectiveMaximum: Double) -> Double {
         roundToGranularity(clamp(percentage, to: effectiveMaximum))
     }
 
+    /// Snapped to the 5% grid before clamping, so a hand-edited or
+    /// programmatically-set off-grid ceiling (e.g. 138) can't let
+    /// `setPercentage` resolve a value above it (138 itself would never be
+    /// reachable, but 140 — the nearest grid point at or below a rounded
+    /// 138 — is the actual ceiling from here on).
     private static func clampedBoostCeiling(_ percentage: Double) -> Double {
-        min(max(percentage, nominalCeilingPercentage), maximumPercentage)
+        min(max(roundToGranularity(percentage), nominalCeilingPercentage), maximumPercentage)
     }
 
     private static func state(
@@ -509,6 +764,7 @@ final class BrightnessController {
         boostCeiling: Double,
         keyRemapEnabled: Bool,
         keyRemapShortcut: KeyRemapShortcut,
+        autoBrightnessTakeoverEnabled: Bool,
         boostBlockedByOtherApp: Bool
     ) -> State {
         State(
@@ -522,6 +778,7 @@ final class BrightnessController {
             boostCeiling: boostCeiling,
             keyRemapEnabled: keyRemapEnabled,
             keyRemapShortcut: keyRemapShortcut,
+            autoBrightnessTakeoverEnabled: autoBrightnessTakeoverEnabled,
             boostBlockedByOtherApp: boostBlockedByOtherApp
         )
     }

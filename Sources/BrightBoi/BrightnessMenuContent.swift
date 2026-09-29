@@ -37,14 +37,17 @@ struct BrightnessMenuContent: View {
                     percentage: state.percentage,
                     supportsBoost: state.supportsBoost,
                     palette: palette,
-                    onChange: { controller.setPercentage($0) }
+                    onChange: { controller.setPercentageFromDrag($0) }
                 )
                 rangeCaptions(palette: palette)
             }
 
             quickSetRow(state: state, palette: palette)
 
-            if state.boostBlockedByOtherApp || controller.batteryAdvisoryVisible || controller.thermalAdvisory != nil {
+            if state.boostBlockedByOtherApp
+                || controller.batteryAdvisoryVisible
+                || controller.thermalAdvisory != nil
+                || controller.isLowPowerModeAdvisoryVisible {
                 advisories(state: state, palette: palette)
             }
 
@@ -57,6 +60,17 @@ struct BrightnessMenuContent: View {
         }
         .padding(EdgeInsets(top: 14, leading: 14, bottom: 8, trailing: 14))
         .frame(width: 280)
+        .onAppear {
+            controller.syncFromDisplay()
+        }
+        // `MenuBarExtra(.window)` keeps this content's hosting view alive
+        // between openings, so `onAppear` alone isn't guaranteed to fire on
+        // every reopen — pairing it with the app becoming active (which
+        // showing the popover typically triggers) catches the reopen case
+        // `onAppear` might miss.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            controller.syncFromDisplay()
+        }
     }
 
     private func header(state: BrightnessController.State, palette: Palette) -> some View {
@@ -140,14 +154,24 @@ struct BrightnessMenuContent: View {
     }
 
     /// The Boost-blocked banner reports a real refusal (see `BoostEngagement`'s
-    /// gamma-capture guard); the battery/thermal banners below it are purely
-    /// informational — neither ever blocks or clamps the slider.
+    /// gamma-capture guard); the battery/thermal/Low-Power-Mode banners below
+    /// it are purely informational — none of them ever blocks or clamps the
+    /// slider. `batteryAdvisoryVisible` already excludes itself whenever the
+    /// Low Power Mode banner is showing, so at most one power-related banner
+    /// ever appears at once.
     private func advisories(state: BrightnessController.State, palette: Palette) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if state.boostBlockedByOtherApp {
                 AdvisoryBanner(
                     icon: "exclamationmark.triangle.fill",
                     text: "Another app is already boosting this display.",
+                    palette: palette
+                )
+            }
+            if controller.isLowPowerModeAdvisoryVisible {
+                AdvisoryBanner(
+                    icon: "bolt.fill",
+                    text: "Low Power Mode is on — Boost above 100% uses extra power.",
                     palette: palette
                 )
             }

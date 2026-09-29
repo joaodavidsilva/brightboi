@@ -40,6 +40,7 @@ final class BrightnessHUDController {
             boostCeiling: BrightnessController.maximumPercentage,
             keyRemapEnabled: true,
             keyRemapShortcut: .defaultShortcut,
+            autoBrightnessTakeoverEnabled: true,
             boostBlockedByOtherApp: false
         )
         let hostingView = NSHostingView(rootView: BrightnessHUDView(state: placeholderState))

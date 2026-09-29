@@ -212,8 +212,10 @@ struct GammaTable: Equatable {
     /// UI to show it in — matches the dlopen/dlsym failure logging in
     /// `LiveDisplayBrightnessProvider`.
     func apply(to displayID: CGDirectDisplayID) {
-        var r = red, g = green, b = blue
-        let result = CGSetDisplayTransferByTable(displayID, UInt32(r.count), &r, &g, &b)
+        // `CGSetDisplayTransferByTable` takes `const CGGammaValue *`, so the
+        // arrays can be passed directly — no need to copy them into `var`s
+        // first just to take their address.
+        let result = CGSetDisplayTransferByTable(displayID, UInt32(red.count), red, green, blue)
         if result != .success {
             FileHandle.standardError.write(Data("BrightBoi: CGSetDisplayTransferByTable failed (\(result.rawValue))\n".utf8))
         }

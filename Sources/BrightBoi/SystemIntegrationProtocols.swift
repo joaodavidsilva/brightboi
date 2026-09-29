@@ -33,11 +33,45 @@ protocol DisplayBrightnessProviding {
     /// MacBook Air), where Boost is a physical impossibility, not a
     /// permissions or software gap.
     func supportsExtendedBrightness() -> Bool
+
+    /// The display's live Nominal brightness (0...100), read straight from
+    /// the system rather than from anything BrightBoi itself last wrote —
+    /// `nil` when it can't be read (e.g. clamshell mode resolving to the
+    /// external display). Used both to adopt the user's current level on a
+    /// fresh install, instead of jumping to a fixed default, and to notice a
+    /// brightness change made outside BrightBoi (Control Center, a native
+    /// key press with Key Remap off, macOS's own dimming).
+    func currentNominalPercentage() -> Double?
+
+    /// Releases Boost's gamma scaling and EDR headroom without writing
+    /// Nominal brightness — the "someone else already set Nominal, Boost
+    /// just needs to get out of the way" half of adopting an external
+    /// brightness change. Distinct from `apply(percentage:)` with a
+    /// Nominal-range value, which would also rewrite the Nominal brightness
+    /// itself and could fight a Control Center drag still in progress.
+    func adoptExternalNominal()
 }
 
-/// Disables macOS's native ambient-light-sensor-driven auto-brightness.
+/// Disables/restores macOS's native ambient-light-sensor-driven
+/// auto-brightness, and reports whether it's currently on — used to record
+/// the user's real setting before BrightBoi's takeover so it can be put
+/// back exactly as found on quit.
 protocol AutoBrightnessToggling {
     func disableAutoBrightness()
+
+    /// Restores macOS's own ambient-light-sensor-driven auto-brightness —
+    /// the inverse of `disableAutoBrightness()`, used to give control back
+    /// on quit (and when the user turns off BrightBoi's takeover in
+    /// Settings).
+    func enableAutoBrightness()
+
+    /// The system's real current setting for "Automatically adjust
+    /// brightness", read fresh (not cached) — `nil` only if the underlying
+    /// private symbol couldn't be loaded at all. An absent preference key is
+    /// reported as `true`: that's the macOS default on a Mac where the
+    /// checkbox was never touched, and treating it as `false` would mean
+    /// quitting never restores that default.
+    func isAutoBrightnessEnabled() -> Bool?
 }
 
 /// The real login-item status, straight from `SMAppService.mainApp.status` —
@@ -129,6 +163,32 @@ protocol BrightnessPersisting {
     /// on any other path, so it never re-shows once either is chosen.
     func save(hasCompletedOnboarding: Bool)
     func loadHasCompletedOnboarding() -> Bool?
+
+    /// Whether macOS's own auto-brightness was on right before BrightBoi's
+    /// takeover disabled it — recorded once per continuous run (see
+    /// `loadAutoBrightnessWasEnabledOriginally`), so quitting can put it back
+    /// exactly as found.
+    func save(autoBrightnessWasEnabledOriginally: Bool)
+
+    /// `nil` until the first time this is recorded in a session that hasn't
+    /// yet cleared it — `BrightnessController` only ever writes this once
+    /// per continuous run (guarded by this being `nil`), so a crash between
+    /// disabling auto-brightness and restoring it on quit can't have the
+    /// *next* launch overwrite the true original with the now-disabled
+    /// value it would otherwise read.
+    func loadAutoBrightnessWasEnabledOriginally() -> Bool?
+
+    /// Called after successfully restoring the original on a clean quit, so
+    /// the next launch records a fresh "original" rather than continuing to
+    /// protect a value that's already been put back.
+    func clearAutoBrightnessWasEnabledOriginally()
+
+    /// The Settings toggle "Turn off macOS auto-brightness while BrightBoi
+    /// runs". `nil` on a fresh install, which `BrightnessController` treats
+    /// as `true` — matching today's unconditional takeover for existing
+    /// users.
+    func save(autoBrightnessTakeoverEnabled: Bool)
+    func loadAutoBrightnessTakeoverEnabled() -> Bool?
 }
 
 /// Starts/stops the system-wide Key Remap tap. `RealKeyTap` supplies the real
@@ -149,21 +209,45 @@ protocol KeyTapControlling {
 }
 
 /// Reports whether the Mac is currently running on battery power (not
-/// connected to a power adapter), wrapping IOKit's power source APIs. Backs
-/// the battery-cost advisory, which warns rather than blocks or clamps the
+/// connected to a power adapter) and whether Low Power Mode is on, wrapping
+/// IOKit's power source APIs and `ProcessInfo`. Backs the battery-cost and
+/// Low Power Mode advisories, which warn rather than block or clamp the
 /// slider — draining the battery fast is the user's call to make, not
-/// BrightBoi's to prevent.
+/// BrightBoi's to prevent. `@MainActor` because the real implementation's
+/// observer setup/teardown (a `CFRunLoopSource` on the main run loop, an
+/// `NSObjectProtocol` token) is only ever driven from `BrightnessController`.
+@MainActor
 protocol PowerSourceProviding {
     func isOnBatteryPower() -> Bool
+
+    /// Apple documents Low Power Mode as reducing screen brightness among
+    /// its energy-saving measures — independent of `isOnBatteryPower()`,
+    /// since pmset keeps a separate power mode per power source and Low
+    /// Power Mode can be on while plugged in.
+    func isLowPowerModeEnabled() -> Bool
+
+    /// Calls `onChange` after either kind of power-state event this
+    /// protocol reports on — an IOKit power-source change (plug/unplug, a
+    /// charge-percentage tick) or Low Power Mode flipping. The caller
+    /// re-reads whichever of `isOnBatteryPower()`/`isLowPowerModeEnabled()`
+    /// it cares about itself; this only signals "something changed, go
+    /// re-check" rather than describing what changed.
+    func startObserving(_ onChange: @escaping () -> Void)
 }
 
 /// Reports the system's current thermal pressure via `ProcessInfo`. Pulled
 /// out as its own seam so the thermal advisory's condition is fake-able in
 /// tests instead of reading a live system value directly — the advisory it
 /// drives is a heuristic correlation with the requested percentage, not a
-/// measurement of what the display actually delivers.
+/// measurement of what the display actually delivers. `@MainActor` for the
+/// same reason as `PowerSourceProviding`.
+@MainActor
 protocol ThermalStateProviding {
     func currentThermalState() -> ProcessInfo.ThermalState
+
+    /// Calls `onChange` whenever `currentThermalState()` may have changed —
+    /// the caller re-reads it rather than being told the new value directly.
+    func startObserving(_ onChange: @escaping () -> Void)
 }
 
 /// Reads current Accessibility/Input Monitoring permission status, and
