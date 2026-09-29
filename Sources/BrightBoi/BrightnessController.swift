@@ -66,6 +66,12 @@ final class BrightnessController {
         var isBoosted: Bool
         var iconFillFraction: Double
         var supportsBoost: Bool
+
+        /// `false` while no built-in display is online (lid closed in
+        /// clamshell mode): brightness control is unavailable then, and is
+        /// never redirected to an external monitor. Defaults to `true` so a
+        /// state built for display purposes alone need not name it.
+        var builtInDisplayAvailable: Bool = true
         var launchAtLoginEnabled: Bool
         var launchAtLoginNeedsApproval: Bool
         var launchAtLoginStatusMessage: String?
@@ -154,7 +160,7 @@ final class BrightnessController {
     @ObservationIgnored
     var onKeyPress: ((KeyPress, State) -> Void)?
 
-    private let displayBrightness: DisplayBrightnessProviding
+    private var displayBrightness: DisplayBrightnessProviding
     private let autoBrightnessToggle: AutoBrightnessToggling
     private let loginItemService: LoginItemRegistering
     private let persistence: BrightnessPersisting
@@ -165,7 +171,16 @@ final class BrightnessController {
 
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
-    private let supportsBoost: Bool
+    /// Whether Boost is available right now — can change during a session as
+    /// the built-in display comes and goes; see `displayConfigurationDidChange`.
+    private var supportsBoost: Bool
+    private var builtInDisplayAvailable: Bool
+    /// The Boost level (above 100%) the user had before Boost became
+    /// unavailable — the built-in display went away, or the session started
+    /// without it. Put back when Boost returns, and cleared by any deliberate
+    /// change of level. Never persisted: the saved level stays as the user
+    /// left it, so a relaunch can still restore it.
+    private var boostLevelToRestore: Double?
     private let percentageSource: PercentageSource
     private var boostCeiling: Double
     private var keyRemapEnabled: Bool
@@ -225,11 +240,13 @@ final class BrightnessController {
         self.persistenceDebounceInterval = persistenceDebounceInterval
         self.schedule = schedule
 
-        // Session-start-only check, decided once here and never re-read —
-        // Boost availability can't change mid-session, since it depends on
-        // the built-in display's fixed physical headroom.
+        // Boost needs a built-in display whose panel can grant EDR headroom.
+        // That can change mid-session when the display comes or goes (lid,
+        // hot-plug), so `displayConfigurationDidChange` re-reads it.
         let supportsBoost = displayBrightness.supportsExtendedBrightness()
         self.supportsBoost = supportsBoost
+        let builtInDisplayAvailable = displayBrightness.isBuiltInDisplayAvailable
+        self.builtInDisplayAvailable = builtInDisplayAvailable
 
         // `nil` (fresh install) defaults to `maximumPercentage`, identical
         // to today's fixed 200% ceiling until deliberately lowered. Snapped
@@ -253,8 +270,8 @@ final class BrightnessController {
         // current level rather than jumping to a fixed default — that's a
         // jarring first impression and, at night, briefly blinding. Falls
         // back to `nominalCeilingPercentage` only when the display can't be
-        // read either (e.g. clamshell mode, where `resolveBuiltInDisplayID`
-        // falls back to the external display). A *persisted* value is
+        // read either (e.g. clamshell mode, with no built-in display online).
+        // A *persisted* value is
         // floored at `minimumRestoredPercentage`; an adopted display reading
         // is taken exactly as found, including a genuine 0 — the panel's
         // already at that level, so there's nothing to protect against.
@@ -273,6 +290,12 @@ final class BrightnessController {
         self.percentageSource = source
 
         let restoredPercentage = Self.resolvedPercentage(rawPercentage, effectiveMaximum: boostAwareCeiling)
+        if source == .persisted, !supportsBoost {
+            // Clamped only because Boost isn't available yet: remember the
+            // level so it comes back if Boost does.
+            let wanted = Self.resolvedPercentage(rawPercentage, effectiveMaximum: boostCeiling)
+            if wanted > Self.nominalCeilingPercentage { self.boostLevelToRestore = wanted }
+        }
         // `nil` (fresh install) defaults to `true`, matching the app's
         // previous unconditional registration behavior for upgrading users.
         // `start()` reconciles this against the real login-item status
@@ -286,6 +309,7 @@ final class BrightnessController {
         self.currentState = Self.state(
             for: restoredPercentage,
             supportsBoost: supportsBoost,
+            builtInDisplayAvailable: builtInDisplayAvailable,
             launchAtLoginEnabled: launchAtLoginEnabled,
             launchAtLoginNeedsApproval: false,
             launchAtLoginStatusMessage: nil,
@@ -337,6 +361,10 @@ final class BrightnessController {
             applyToDisplay(percentage: currentState.percentage)
         }
 
+        displayBrightness.onDisplayConfigurationChange = { [weak self] in
+            self?.displayConfigurationDidChange()
+        }
+
         syncLaunchAtLoginAtStart()
         if keyRemapEnabled {
             startKeyTap(remap: keyRemapShortcut)
@@ -349,6 +377,7 @@ final class BrightnessController {
     func setPercentage(_ percentage: Double) {
         guard percentage.isFinite else { return }
         let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: currentEffectiveMaximum)
+        boostLevelToRestore = nil
         applyToDisplay(percentage: resolved)
         schedulePersist(currentState.percentage)
     }
@@ -368,6 +397,7 @@ final class BrightnessController {
         guard percentage.isFinite else { return }
         let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: currentEffectiveMaximum)
         guard resolved != currentState.percentage else { return }
+        boostLevelToRestore = nil
         applyToDisplay(percentage: resolved)
         schedulePersist(currentState.percentage)
     }
@@ -400,6 +430,7 @@ final class BrightnessController {
         if currentState.isBoosted {
             displayBrightness.adoptExternalNominal()
         }
+        boostLevelToRestore = nil
         currentState = updatedState(percentage: adopted)
         schedulePersist(adopted)
     }
@@ -441,6 +472,7 @@ final class BrightnessController {
         currentState = Self.state(
             for: currentState.percentage,
             supportsBoost: supportsBoost,
+            builtInDisplayAvailable: builtInDisplayAvailable,
             launchAtLoginEnabled: status == .enabled || status == .requiresApproval,
             launchAtLoginNeedsApproval: status == .requiresApproval,
             launchAtLoginStatusMessage: message,
@@ -587,6 +619,45 @@ final class BrightnessController {
         persistence.clearAutoBrightnessWasEnabledOriginally()
     }
 
+    /// The built-in display came, went, or changed what it can do (lid
+    /// opened or closed, a display plugged in, ...). Re-reads whether Boost
+    /// is available and reshapes the state to match, without ever saving the
+    /// reshaped level — the persisted level stays as the user left it.
+    ///
+    /// - Boost went away: the shown level drops to what is reachable (100%),
+    ///   and the Boost level is remembered so it comes back with the display.
+    /// - Boost is available (again): the remembered level, or the current
+    ///   one, is applied to the display.
+    /// - The built-in display is back but can't boost: its level is
+    ///   re-applied so it matches what the user last chose.
+    /// While no built-in display is online nothing is applied at all: there
+    /// is nothing to drive, and no other display is ever driven instead.
+    private func displayConfigurationDidChange() {
+        let nowSupportsBoost = displayBrightness.supportsExtendedBrightness()
+        let nowAvailable = displayBrightness.isBuiltInDisplayAvailable
+        guard nowSupportsBoost != supportsBoost || nowAvailable != builtInDisplayAvailable else { return }
+        supportsBoost = nowSupportsBoost
+        builtInDisplayAvailable = nowAvailable
+
+        var target = currentState.percentage
+        if !nowSupportsBoost {
+            if target > Self.nominalCeilingPercentage {
+                boostLevelToRestore = target
+                target = Self.nominalCeilingPercentage
+            }
+        } else if let restore = boostLevelToRestore {
+            boostLevelToRestore = nil
+            target = restore
+        }
+        target = Self.resolvedPercentage(target, effectiveMaximum: currentEffectiveMaximum)
+
+        if nowAvailable {
+            applyToDisplay(percentage: target)
+        } else {
+            currentState = updatedState(percentage: target)
+        }
+    }
+
     private func startKeyTap(remap: KeyRemapShortcut) {
         keyTap.start(remap: remap) { [weak self] press in
             self?.handleKeyPress(press)
@@ -722,6 +793,7 @@ final class BrightnessController {
         Self.state(
             for: percentage,
             supportsBoost: supportsBoost,
+            builtInDisplayAvailable: builtInDisplayAvailable,
             launchAtLoginEnabled: launchAtLoginEnabled ?? currentState.launchAtLoginEnabled,
             launchAtLoginNeedsApproval: currentState.launchAtLoginNeedsApproval,
             launchAtLoginStatusMessage: currentState.launchAtLoginStatusMessage,
@@ -807,6 +879,7 @@ final class BrightnessController {
     private static func state(
         for percentage: Double,
         supportsBoost: Bool,
+        builtInDisplayAvailable: Bool,
         launchAtLoginEnabled: Bool,
         launchAtLoginNeedsApproval: Bool,
         launchAtLoginStatusMessage: String?,
@@ -821,6 +894,7 @@ final class BrightnessController {
             isBoosted: percentage > nominalCeilingPercentage,
             iconFillFraction: percentage / effectiveMaximum(supportsBoost: supportsBoost),
             supportsBoost: supportsBoost,
+            builtInDisplayAvailable: builtInDisplayAvailable,
             launchAtLoginEnabled: launchAtLoginEnabled,
             launchAtLoginNeedsApproval: launchAtLoginNeedsApproval,
             launchAtLoginStatusMessage: launchAtLoginStatusMessage,

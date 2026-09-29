@@ -18,6 +18,12 @@ enum BrightnessApplyOutcome: Equatable {
     /// user as if another app were responsible; the caller still clamps to
     /// Nominal rather than claiming the requested percentage was reached.
     case captureFailed
+
+    /// There is no built-in display to drive (lid closed, or none online),
+    /// or the EDR overlay could not be mounted on its screen. Nothing was
+    /// changed, and the caller stays clamped at Nominal. Never redirected to
+    /// another display.
+    case displayUnavailable
 }
 
 /// Drives the built-in display's actual brightness. `@MainActor` because the
@@ -28,16 +34,30 @@ enum BrightnessApplyOutcome: Equatable {
 protocol DisplayBrightnessProviding {
     func apply(percentage: Double) -> BrightnessApplyOutcome
 
-    /// Whether this Mac's built-in display has the physical EDR headroom
-    /// Boost relies on (per ADR-0003) — `false` on non-XDR Macs (e.g.
-    /// MacBook Air), where Boost is a physical impossibility, not a
-    /// permissions or software gap.
+    /// Whether the built-in display can boost right now: it is online, and
+    /// its panel *could* offer the EDR headroom Boost needs (its potential
+    /// headroom, not what is granted at this moment — that stays at 1.0
+    /// until something asks for EDR). `false` on non-XDR Macs (e.g. MacBook
+    /// Air), and while the built-in display is not online. Can change during
+    /// a session; see `onDisplayConfigurationChange`.
     func supportsExtendedBrightness() -> Bool
+
+    /// Whether a built-in display is online and active. Brightness control is
+    /// unavailable while it isn't — it is never redirected to an external
+    /// monitor.
+    var isBuiltInDisplayAvailable: Bool { get }
+
+    /// Called after the display configuration changed in a way that affects
+    /// `isBuiltInDisplayAvailable` or `supportsExtendedBrightness()`: the
+    /// built-in display appeared or disappeared (lid, hot-plug), or its
+    /// identity or capability changed. Never called before the first
+    /// configuration change.
+    var onDisplayConfigurationChange: (() -> Void)? { get set }
 
     /// The display's live Nominal brightness (0...100), read straight from
     /// the system rather than from anything BrightBoi itself last wrote —
-    /// `nil` when it can't be read (e.g. clamshell mode resolving to the
-    /// external display). Used both to adopt the user's current level on a
+    /// `nil` when it can't be read (e.g. no built-in display is online,
+    /// or the symbol is unavailable). Used both to adopt the user's current level on a
     /// fresh install, instead of jumping to a fixed default, and to notice a
     /// brightness change made outside BrightBoi (Control Center, a native
     /// key press with Key Remap off, macOS's own dimming).
@@ -142,7 +162,7 @@ protocol BrightnessPersisting {
 
     /// `nil` on a fresh install, which `BrightnessController` treats as
     /// defaulting to `maximumPercentage` (200%) — identical to today's fixed
-    /// behavior until the user deliberately lowers it. See ADR-0004.
+    /// behavior until the user deliberately lowers it.
     func save(boostCeiling: Double)
     func loadBoostCeiling() -> Double?
 

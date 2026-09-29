@@ -1,29 +1,29 @@
 import Foundation
 import CoreGraphics
 import AppKit
-import MetalKit
 
-/// Owns the one piece of state Extended Brightness / Boost needs across
-/// calls: the display's original gamma table (captured on first engagement)
-/// and the EDR overlay that keeps system-wide EDR headroom available while
-/// boosted. Used by `LiveDisplayBrightnessProvider`.
+/// Owns the state Extended Brightness / Boost needs across calls: the
+/// built-in display's original gamma table (the baseline), the table this
+/// instance last wrote, and the EDR overlay that keeps system-wide EDR
+/// headroom available while boosted. Used by `LiveDisplayBrightnessProvider`.
 ///
-/// The overlay is created lazily on first engagement but then kept alive for
-/// the rest of the process's life — engaging/disengaging toggles its clear
-/// color and EDR flag rather than mounting/tearing down the
-/// `NSWindow`/`MTKView`/`CAMetalLayer` each time. Repeatedly destroying that
-/// Metal-backed window (closing it, releasing its layer) reliably crashed
-/// with `EXC_BAD_ACCESS` during autorelease-pool drain on this hardware/OS —
-/// the window server doesn't expect that churn. Leaving one overlay mounted
-/// permanently is both simpler and empirically stable; disengaging still
-/// fully restores the gamma table and drops
-/// `maximumExtendedDynamicRangeColorComponentValue` back to 1.0 (verified
-/// live, though the panel itself takes ~15–20s to visually ramp back down —
-/// a hardware characteristic, not a logic bug).
+/// Boost scales the baseline table by a factor between 1.0 and 2.0. The
+/// factor actually written is clamped to the EDR headroom the display grants
+/// at that moment (`BoostHeadroom.effectiveFactor`): the headroom takes about
+/// a second to ramp up after the overlay asks for it, and scaling past it
+/// clips highlights to white instead of brightening the screen. So Boost
+/// steps up as the headroom arrives, and backs off if it is throttled.
 ///
-/// Reimplemented independently from the technique description in
-/// `docs/brightness-api-research.md` — BrightIntosh (GPLv3) was read for
-/// research only, not copied.
+/// The baseline is never trusted for longer than the table it belongs to;
+/// `GammaTable.baselineDecision` describes how a table changed by something
+/// else is told apart from one this instance wrote.
+///
+/// The overlay is created on first engagement and kept for the life of the
+/// process (see `EDROverlayWindow`); disengaging restores the gamma table and
+/// releases the EDR request without tearing the window down.
+///
+/// Reimplemented independently from a description of the technique —
+/// BrightIntosh (GPLv3) was read for research only, not copied.
 ///
 /// `@MainActor`: `EDROverlayWindow` is main-thread-only (`NSWindow`/`MTKView`),
 /// and `apply(percentage:)` — the only caller of `engage`/`disengage` — is
@@ -32,171 +32,405 @@ import MetalKit
 /// UI-driven design.
 @MainActor
 final class BoostEngagement {
-    private let displayID: CGDirectDisplayID
+    /// How often the granted EDR headroom is checked for as long as Boost is
+    /// engaged. The headroom can take many seconds to arrive after the
+    /// overlay asks for it, and can be taken back later when the panel
+    /// throttles, and `didChangeScreenParametersNotification` is not
+    /// guaranteed to announce either, so the factor follows it by polling.
+    /// Nothing polls while Boost is off.
+    static let headroomPollInterval: TimeInterval = 0.25
+
+    /// How long after waking the display is checked a second time. The system
+    /// may reset the table some moments after the wake notification.
+    static let postWakeRecheckDelay: TimeInterval = 2.0
+
+    /// `nil` while the built-in display is not online. Boost cannot engage
+    /// then, and nothing here ever falls back to another display.
+    private(set) var displayID: CGDirectDisplayID?
+
+    private let readHeadroom: (CGDirectDisplayID) -> (current: CGFloat, potential: CGFloat)?
+
+    /// The display's own table as it was before Boost scaled it. `nil`
+    /// whenever Boost is not engaged.
     private var baselineGammaTable: GammaTable?
     /// The table this instance itself last wrote to the display — compared
-    /// against the live table before `disengage()` restores anything, so a
-    /// second copy (or another booster) that took over the display in the
-    /// meantime doesn't get its table clobbered by a stale restore.
+    /// against the live table before anything is written or restored, so a
+    /// second copy (or another app) that changed the display in the meantime
+    /// doesn't get its table clobbered by a stale write.
     private var lastWrittenGammaTable: GammaTable?
     private var overlay: EDROverlayWindow?
-    private var currentFactor: CGGammaValue = 1.0
-    private var wakeObserver: NSObjectProtocol?
+    /// The factor asked for, and the (possibly lower) one actually written —
+    /// the delivered brightness, 100 + (effective - 1) * 100 percent.
+    private var requestedFactor: CGGammaValue = 1.0
+    private(set) var effectiveFactor: CGGammaValue = 1.0
+    private var headroomTimer: Timer?
+    private var recheckWork: DispatchWorkItem?
+    private var observers: [NSObjectProtocol] = []
 
-    init(displayID: CGDirectDisplayID) {
+    var isEngaged: Bool { baselineGammaTable != nil }
+
+    init(
+        displayID: CGDirectDisplayID?,
+        readHeadroom: @escaping (CGDirectDisplayID) -> (current: CGFloat, potential: CGFloat)? = { BoostHeadroom.read(displayID: $0) }
+    ) {
         self.displayID = displayID
-        self.wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+        self.readHeadroom = readHeadroom
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.reapplyAfterWake()
+                self?.handleWake()
             }
-        }
+        })
+        // A normal quit leaves through `BrightnessController`'s termination
+        // hook too; this is the safety net for any other route to
+        // termination. A crash or SIGKILL can't run it, and there
+        // WindowServer discards the dead client's table.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.disengage()
+            }
+        })
     }
 
     isolated deinit {
-        if let wakeObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+        for observer in observers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            NotificationCenter.default.removeObserver(observer)
         }
+        headroomTimer?.invalidate()
+        recheckWork?.cancel()
     }
 
-    /// Captures the display's current gamma table as the Boost baseline on
-    /// first engagement, then scales it by `factor` on every call. Refuses
-    /// to engage if the captured table already looks scaled — another
-    /// process (a second BrightBoi, or a third-party booster such as
-    /// BrightIntosh) is already boosting this display, and adopting its
-    /// table as the baseline would compound the scaling on top of theirs.
-    /// Also refuses if the capture itself fails, rather than silently
-    /// reporting success while nothing was actually scaled or mounted.
+    /// Engages Boost at `factor` (1.0...2.0). Always works from a freshly
+    /// validated view of the display: captures its live table, refuses if it
+    /// already looks scaled by another process (adopting its table as the
+    /// baseline would compound the scaling on top of theirs), and refuses
+    /// if the capture itself fails. Only once the baseline is settled and the
+    /// overlay is mounted on the built-in screen does EDR get requested and
+    /// the table get scaled, so a failure at any step leaves the display
+    /// exactly as it was found.
     @discardableResult
     func engage(factor: CGGammaValue) -> BrightnessApplyOutcome {
-        if baselineGammaTable == nil {
-            guard let captured = GammaTable.capture(displayID: displayID) else { return .captureFailed }
-            guard !captured.looksAlreadyBoosted else { return .boostBlockedByOtherApp }
-            baselineGammaTable = captured
+        guard let displayID else { return .displayUnavailable }
+        guard let live = GammaTable.capture(displayID: displayID) else { return .captureFailed }
+
+        switch GammaTable.baselineDecision(live: live, lastWritten: lastWrittenGammaTable) {
+        case .keep:
+            break
+        case .adopt:
+            baselineGammaTable = live
+            lastWrittenGammaTable = nil
+        case .foreignBooster:
+            // If this instance was boosting, whoever changed the table has
+            // taken over; step aside without writing anything back.
+            if isEngaged { disengage() }
+            return .boostBlockedByOtherApp
         }
-        currentFactor = factor
-        if overlay == nil {
-            let overlay = EDROverlayWindow()
-            overlay.mount()
-            self.overlay = overlay
-        } else if let overlay {
-            overlay.engageEDR()
+
+        guard mountOrRehomeOverlay(on: displayID) else {
+            // Nothing was scaled: forget a baseline adopted a moment ago.
+            if lastWrittenGammaTable == nil { baselineGammaTable = nil }
+            return .displayUnavailable
         }
-        let scaled = baselineGammaTable?.scaled(by: factor)
-        scaled?.apply(to: displayID)
-        lastWrittenGammaTable = scaled
+
+        requestedFactor = factor
+        overlay?.engageEDR()
+        guard writeCurrentFactor(force: true) else {
+            disengage()
+            return .captureFailed
+        }
+        startHeadroomTracking()
         return .applied
     }
 
+    /// Restores the display's table and releases the EDR request. Always
+    /// releases EDR, even when no table was captured — a failed engagement
+    /// must not leave the display stuck in EDR mode.
     func disengage() {
-        guard let baselineGammaTable else { return }
+        stopHeadroomTracking()
+        recheckWork?.cancel()
+        requestedFactor = 1.0
+        effectiveFactor = 1.0
+        defer {
+            baselineGammaTable = nil
+            lastWrittenGammaTable = nil
+        }
+        guard let baselineGammaTable, let displayID else {
+            overlay?.disengageEDR()
+            return
+        }
         // Restoring the specific captured table for `displayID` is already
-        // scoped to the built-in display — per the spec's scope boundary,
-        // Boost must never touch an external monitor. (An earlier version of
-        // this also called `CGDisplayRestoreColorSyncSettings()`, which
-        // resets ColorSync for *every* connected display; removed as a real
-        // scope violation, not just belt-and-suspenders.)
+        // scoped to the built-in display — Boost must never touch an
+        // external monitor. (`CGDisplayRestoreColorSyncSettings()` resets
+        // ColorSync for *every* connected display, so it is not used.)
         //
         // Only restore if the table we last wrote is still the one live on
         // the display — if it isn't, another process took over the display
         // while this one was boosted, and writing our old baseline back
         // would stomp on whatever that process left there.
-        if let lastWrittenGammaTable, let live = GammaTable.capture(displayID: displayID), !live.matches(lastWrittenGammaTable) {
-            self.baselineGammaTable = nil
-            self.lastWrittenGammaTable = nil
-            if let overlay {
-                overlay.disengageEDR()
-            }
-            return
+        let untouched: Bool
+        if let lastWrittenGammaTable, let live = GammaTable.capture(displayID: displayID) {
+            untouched = live.matches(lastWrittenGammaTable)
+        } else {
+            untouched = true
         }
-        baselineGammaTable.apply(to: displayID)
-        if let overlay {
-            overlay.disengageEDR()
+        if untouched {
+            baselineGammaTable.apply(to: displayID)
         }
-        self.baselineGammaTable = nil
-        self.lastWrittenGammaTable = nil
+        overlay?.disengageEDR()
     }
 
-    /// Per `docs/brightness-api-research.md`: "the EDR overlay must persist
-    /// for the entire time the user is boosted, and needs sleep/wake...
-    /// handling... this is nontrivial recurring-maintenance logic." macOS
-    /// resets the display's gamma table across sleep/wake, so if the Mac
-    /// wakes while still boosted, reapply the same captured baseline scaled
-    /// by the last-set factor. Continuous drift-polling while awake (the
-    /// research doc's other suggestion) is deliberately not implemented here
-    /// — no drift was observed during live verification, and adding a
-    /// recurring timer for a not-yet-observed problem would be speculative;
-    /// this can be revisited if drift is actually seen in practice.
-    private func reapplyAfterWake() {
-        guard let baselineGammaTable else { return }
-        let scaled = baselineGammaTable.scaled(by: currentFactor)
-        scaled.apply(to: displayID)
+    /// Follows the built-in display when the display configuration changes:
+    /// a different id (or none, when the lid closed) releases Boost on the
+    /// old display first; the same id re-homes the overlay and re-checks the
+    /// granted headroom against what was written.
+    func displayConfigurationChanged(displayID newID: CGDirectDisplayID?) {
+        if newID != displayID {
+            disengage()
+            displayID = newID
+        } else if isEngaged {
+            reassert()
+        }
+    }
+
+    /// While engaged: re-homes the overlay, and re-validates the display's
+    /// table against what was last written. An unchanged table just gets its
+    /// factor re-clamped to the current headroom; a changed one that still
+    /// looks like a plain table becomes the new baseline and is re-scaled.
+    private func reassert() {
+        guard isEngaged, let displayID else { return }
+        guard mountOrRehomeOverlay(on: displayID) else { return }
+        guard let live = GammaTable.capture(displayID: displayID) else { return }
+        switch GammaTable.baselineDecision(live: live, lastWritten: lastWrittenGammaTable) {
+        case .keep:
+            writeCurrentFactor(force: false)
+        case .adopt:
+            baselineGammaTable = live
+            lastWrittenGammaTable = nil
+            writeCurrentFactor(force: true)
+        case .foreignBooster:
+            break
+        }
+        startHeadroomTracking()
+    }
+
+    /// The system resets the display's table across sleep and wake, and may
+    /// do so a moment after the notification, so the table is re-validated
+    /// right away and once more shortly afterwards. Each pass goes through
+    /// the same comparison; nothing is re-captured unconditionally, since a
+    /// table the system did *not* reset would otherwise be adopted as a
+    /// baseline while still scaled.
+    private func handleWake() {
+        guard isEngaged else { return }
+        reassert()
+        recheckWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.reassert()
+            }
+        }
+        recheckWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.postWakeRecheckDelay, execute: work)
+    }
+
+    /// Mounts the overlay on the built-in screen, or moves an existing one
+    /// there. `false` when that screen isn't available right now. A failed
+    /// mount leaves no overlay behind, so the next call simply retries.
+    private func mountOrRehomeOverlay(on displayID: CGDirectDisplayID) -> Bool {
+        if let overlay {
+            return overlay.rehome(to: displayID)
+        }
+        guard let mounted = EDROverlayWindow.mount(on: displayID) else {
+            FileHandle.standardError.write(Data("BrightBoi: could not mount the EDR overlay on display \(displayID)\n".utf8))
+            return false
+        }
+        overlay = mounted
+        return true
+    }
+
+    /// Writes the baseline scaled by the requested factor, clamped to the
+    /// headroom granted right now. Returns `false` only when the write itself
+    /// failed. Skips the write when it would change nothing, unless `force`.
+    @discardableResult
+    private func writeCurrentFactor(force: Bool) -> Bool {
+        guard let displayID, let baselineGammaTable else { return true }
+        let headroom = readHeadroom(displayID)?.current ?? 1.0
+        let effective = CGGammaValue(BoostHeadroom.effectiveFactor(requested: CGFloat(requestedFactor), headroom: headroom))
+        guard force || lastWrittenGammaTable == nil || BoostHeadroom.shouldRewrite(from: CGFloat(effectiveFactor), to: CGFloat(effective)) else {
+            return true
+        }
+        let scaled = baselineGammaTable.scaled(by: effective)
+        guard scaled.apply(to: displayID) else { return false }
         lastWrittenGammaTable = scaled
+        effectiveFactor = effective
+        return true
+    }
+
+    /// Follows the granted headroom for as long as Boost is engaged, so the
+    /// factor steps up as headroom arrives and backs off if it is throttled.
+    private func startHeadroomTracking() {
+        guard headroomTimer == nil else { return }
+        headroomTimer = Timer.scheduledTimer(withTimeInterval: Self.headroomPollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.headroomTick()
+            }
+        }
+    }
+
+    private func headroomTick() {
+        guard isEngaged else {
+            stopHeadroomTracking()
+            return
+        }
+        writeCurrentFactor(force: false)
+    }
+
+    private func stopHeadroomTracking() {
+        headroomTimer?.invalidate()
+        headroomTimer = nil
     }
 }
 
 /// Wraps `CGGetDisplayTransferByTable`/`CGSetDisplayTransferByTable` (public,
-/// documented CoreGraphics APIs) at the 256-sample resolution the research
-/// spike verified works. Not `private` so `BrightnessControllerTests`-style
-/// unit tests can exercise `looksAlreadyBoosted` and `matches` directly via
+/// documented CoreGraphics APIs) at the display's own table resolution. Not
+/// `private` so `GammaTableTests`-style unit tests can exercise
+/// `looksAlreadyBoosted`, `matches` and `baselineDecision` directly via
 /// `@testable import`.
 struct GammaTable: Equatable {
-    static let sampleCount: UInt32 = 256
+    /// Used when the display doesn't report its table capacity.
+    static let fallbackSampleCount: UInt32 = 256
 
     /// The live built-in panel's table peaks at `0.99999994`, comfortably
-    /// under 1.0 — a captured table whose peak clears this by more than
-    /// float noise has already been scaled by something else.
+    /// under 1.0. Covers tables that report their samples unclamped: a peak
+    /// that clears this by more than float noise has already been scaled by
+    /// something else. Read-back tables are clamped at 1.0, so those are
+    /// caught by the plateau check below instead.
     private static let alreadyBoostedThreshold: CGGammaValue = 1.0 + 1e-3
+
+    /// `CGGetDisplayTransferByTable` never reports a sample above 1.0: a table
+    /// scaled past identity reads back clamped, so its peak alone can't give
+    /// the scaling away. It shows as a plateau instead — every sample beyond
+    /// `1/factor` of the range reads exactly 1.0. A plain table has only its
+    /// last few samples at the top; more than this fraction of the samples
+    /// there means something scaled it (a factor of about 1.03 or more).
+    private static let saturationThreshold: CGGammaValue = 1.0 - 1e-3
+    private static let saturatedFractionLimit = 0.03
 
     /// Read-back can be quantized to the hardware LUT, so an exact
     /// floating-point match is too strict for "is this still our table".
-    private static let matchTolerance: CGGammaValue = 1e-3
+    /// Wide enough to absorb resampling between table sizes.
+    private static let matchTolerance: CGGammaValue = 3e-3
+
+    /// A real table never decreases; a sample dipping by more than float
+    /// noise means this isn't a plain calibration curve.
+    private static let monotonicTolerance: CGGammaValue = 1e-4
 
     var red: [CGGammaValue]
     var green: [CGGammaValue]
     var blue: [CGGammaValue]
 
+    /// What to do with the display's live table before writing Boost to it.
+    enum BaselineDecision: Equatable {
+        /// The live table is the one this instance wrote: keep the baseline.
+        case keep
+        /// Something else changed the table and it looks like a plain,
+        /// unboosted table: take it as the new baseline.
+        case adopt
+        /// The live table isn't ours and doesn't look like a plain table —
+        /// another process is boosting or otherwise reshaping the display.
+        case foreignBooster
+    }
+
+    /// Decides whether to keep the current baseline, adopt the live table as
+    /// a new one, or step aside. `lastWritten` is `nil` when Boost isn't
+    /// engaged (there's no baseline yet), in which case the live table is
+    /// simply judged on its own.
+    static func baselineDecision(live: GammaTable, lastWritten: GammaTable?) -> BaselineDecision {
+        if let lastWritten, live.matches(lastWritten) { return .keep }
+        return live.isPlainBaseline ? .adopt : .foreignBooster
+    }
+
+    /// Captures at the display's own table capacity (1024 samples on the
+    /// built-in panel), so a restore is bit-for-bit the calibration the
+    /// display started with rather than a resampled copy of it.
     static func capture(displayID: CGDirectDisplayID) -> GammaTable? {
-        var red = [CGGammaValue](repeating: 0, count: Int(sampleCount))
-        var green = [CGGammaValue](repeating: 0, count: Int(sampleCount))
-        var blue = [CGGammaValue](repeating: 0, count: Int(sampleCount))
+        let capacity = CGDisplayGammaTableCapacity(displayID)
+        let requested = capacity > 0 ? capacity : fallbackSampleCount
+        var red = [CGGammaValue](repeating: 0, count: Int(requested))
+        var green = [CGGammaValue](repeating: 0, count: Int(requested))
+        var blue = [CGGammaValue](repeating: 0, count: Int(requested))
         var actualSampleCount: UInt32 = 0
-        let result = CGGetDisplayTransferByTable(displayID, sampleCount, &red, &green, &blue, &actualSampleCount)
+        let result = CGGetDisplayTransferByTable(displayID, requested, &red, &green, &blue, &actualSampleCount)
         guard result == .success else {
             FileHandle.standardError.write(Data("BrightBoi: CGGetDisplayTransferByTable failed (\(result.rawValue))\n".utf8))
             return nil
         }
-        return GammaTable(red: red, green: green, blue: blue)
+        guard let table = trimmed(red: red, green: green, blue: blue, validSampleCount: Int(min(actualSampleCount, requested))) else {
+            FileHandle.standardError.write(Data("BrightBoi: CGGetDisplayTransferByTable returned no samples\n".utf8))
+            return nil
+        }
+        return table
     }
 
-    /// `true` when this table's peak sample is already well above identity
-    /// — the signal that whatever produced it had already scaled it up, per
-    /// `isAlreadyBoosted(red:green:blue:)`.
+    /// Keeps only the samples the system actually filled in — a shorter
+    /// table than requested would otherwise leave a zero-filled tail that
+    /// maps the top of the range to black. `nil` when no sample is valid.
+    static func trimmed(red: [CGGammaValue], green: [CGGammaValue], blue: [CGGammaValue], validSampleCount: Int) -> GammaTable? {
+        let count = min(validSampleCount, red.count, green.count, blue.count)
+        guard count > 0 else { return nil }
+        return GammaTable(red: Array(red.prefix(count)), green: Array(green.prefix(count)), blue: Array(blue.prefix(count)))
+    }
+
+    /// `true` when this table has a peak above identity, or a plateau at the
+    /// top of the range — the signs that something had already scaled it up,
+    /// per `isAlreadyBoosted(red:green:blue:)`.
     var looksAlreadyBoosted: Bool {
         Self.isAlreadyBoosted(red: red, green: green, blue: blue)
     }
 
     /// Extracted as a pure function over raw samples (rather than reading
     /// `self`) so tests can exercise it against an identity ramp, a ×2 ramp,
-    /// and a real vcgt-like ramp without constructing a `GammaTable` through
-    /// `capture`.
+    /// a clamped read-back of one, and a real vcgt-like ramp without
+    /// constructing a `GammaTable` through `capture`. Two signals: a peak
+    /// above identity (an unclamped table), or a plateau at the top of the
+    /// range (how a scaled table reads back, since the system clamps at 1.0).
     static func isAlreadyBoosted(red: [CGGammaValue], green: [CGGammaValue], blue: [CGGammaValue]) -> Bool {
-        let peak = [red, green, blue].compactMap { $0.max() }.max() ?? 0
-        return peak > alreadyBoostedThreshold
+        [red, green, blue].contains { channel in
+            guard let peak = channel.max() else { return false }
+            if peak > alreadyBoostedThreshold { return true }
+            let saturated = channel.filter { $0 >= saturationThreshold }.count
+            return Double(saturated) / Double(channel.count) > saturatedFractionLimit
+        }
+    }
+
+    /// An unboosted, well-formed table: nothing above identity, and no
+    /// channel that decreases. What may safely become a Boost baseline.
+    var isPlainBaseline: Bool {
+        guard !looksAlreadyBoosted else { return false }
+        return [red, green, blue].allSatisfy { channel in
+            zip(channel, channel.dropFirst()).allSatisfy { $1 >= $0 - Self.monotonicTolerance }
+        }
     }
 
     /// Per-sample comparison within `matchTolerance`, rather than exact
-    /// equality — used by `BoostEngagement.disengage()` to check the table
-    /// it's about to restore over is still the one it wrote, not another
-    /// process's table from taking over the display in the meantime.
+    /// equality — used to check the live table is still the one this
+    /// instance wrote, not another process's table from taking over the
+    /// display in the meantime. Samples above 1.0 compare as 1.0, because
+    /// that is all a read-back of the live table ever reports: a boosted
+    /// table this instance wrote must still match itself.
     func matches(_ other: GammaTable) -> Bool {
         guard red.count == other.red.count, green.count == other.green.count, blue.count == other.blue.count else { return false }
-        return zip(red, other.red).allSatisfy { abs($0 - $1) <= Self.matchTolerance }
-            && zip(green, other.green).allSatisfy { abs($0 - $1) <= Self.matchTolerance }
-            && zip(blue, other.blue).allSatisfy { abs($0 - $1) <= Self.matchTolerance }
+        func close(_ a: [CGGammaValue], _ b: [CGGammaValue]) -> Bool {
+            zip(a, b).allSatisfy { abs(min($0, 1) - min($1, 1)) <= Self.matchTolerance }
+        }
+        return close(red, other.red) && close(green, other.green) && close(blue, other.blue)
     }
 
     func scaled(by factor: CGGammaValue) -> GammaTable {
@@ -207,11 +441,13 @@ struct GammaTable: Equatable {
         )
     }
 
-    /// A failure here (e.g. mid-restore) would silently leave the display
-    /// stuck over-brightened, so it's worth surfacing even though there's no
-    /// UI to show it in — matches the dlopen/dlsym failure logging in
-    /// `LiveDisplayBrightnessProvider`.
-    func apply(to displayID: CGDirectDisplayID) {
+    /// Writes this table to the display, at its own sample count. A failure
+    /// here (e.g. mid-restore) would silently leave the display stuck
+    /// over-brightened, so it's worth surfacing even though there's no UI to
+    /// show it in — matches the dlopen/dlsym failure logging in
+    /// `LiveDisplayBrightnessProvider`. Returns whether the write succeeded.
+    @discardableResult
+    func apply(to displayID: CGDirectDisplayID) -> Bool {
         // `CGSetDisplayTransferByTable` takes `const CGGammaValue *`, so the
         // arrays can be passed directly — no need to copy them into `var`s
         // first just to take their address.
@@ -219,99 +455,6 @@ struct GammaTable: Equatable {
         if result != .success {
             FileHandle.standardError.write(Data("BrightBoi: CGSetDisplayTransferByTable failed (\(result.rawValue))\n".utf8))
         }
+        return result == .success
     }
-}
-
-/// The public-API EDR trigger from `docs/brightness-api-research.md`: a 1x1px,
-/// borderless, always-on-top, transparent window whose content is an
-/// EDR-capable Metal layer. Rendering one frame cleared to a value > 1.0 is
-/// what makes `NSScreen.maximumExtendedDynamicRangeColorComponentValue`
-/// exceed 1.0 system-wide, which is what lets gamma factors above identity
-/// actually brighten the panel instead of clamping at white. Reverting the
-/// clear color and EDR flag back to identity lets the window server drop
-/// that headroom back down without needing to tear down the window itself.
-@MainActor
-private final class EDROverlayWindow: NSObject, MTKViewDelegate {
-    /// > 1.0 to force EDR engagement; research measured this panel's max EDR
-    /// headroom at ~3.2x once triggered (see `docs/brightness-api-research.md`),
-    /// so any value in `(1.0, 3.2]` works here — 1.6 is simply comfortably
-    /// inside that range, not itself a brightness anchor (the *gamma factor*
-    /// in `BoostEngagement`, anchored 1.0...2.0, is what controls perceived
-    /// brightness).
-    private static let edrClearValue: Double = 1.6
-    private static let identityClearValue: Double = 1.0
-
-    private var window: NSWindow?
-    private var metalView: MTKView?
-    private var commandQueue: MTLCommandQueue?
-
-    func mount() {
-        guard window == nil, let screen = NSScreen.main, let device = MTLCreateSystemDefaultDevice() else { return }
-
-        let metalView = MTKView(frame: CGRect(x: 0, y: 0, width: 1, height: 1), device: device)
-        metalView.autoResizeDrawable = false
-        metalView.drawableSize = CGSize(width: 1, height: 1)
-        metalView.colorPixelFormat = .rgba16Float
-        metalView.colorspace = CGColorSpace(name: CGColorSpace.extendedLinearSRGB)
-        metalView.clearColor = MTLClearColorMake(Self.edrClearValue, Self.edrClearValue, Self.edrClearValue, 1.0)
-        metalView.preferredFramesPerSecond = 5
-        metalView.delegate = self
-        if let layer = metalView.layer as? CAMetalLayer {
-            layer.wantsExtendedDynamicRangeContent = true
-            layer.isOpaque = false
-            layer.pixelFormat = .rgba16Float
-        }
-
-        commandQueue = device.makeCommandQueue()
-
-        let overlayWindow = NSWindow(
-            contentRect: CGRect(x: 0, y: screen.frame.height - 1, width: 1, height: 1),
-            styleMask: [],
-            backing: .buffered,
-            defer: false
-        )
-        overlayWindow.level = .screenSaver
-        overlayWindow.isOpaque = false
-        overlayWindow.hasShadow = false
-        overlayWindow.backgroundColor = .clear
-        overlayWindow.ignoresMouseEvents = true
-        overlayWindow.collectionBehavior = [.stationary, .ignoresCycle, .canJoinAllSpaces]
-        overlayWindow.contentView = metalView
-        overlayWindow.orderFrontRegardless()
-
-        self.window = overlayWindow
-        self.metalView = metalView
-    }
-
-    func engageEDR() {
-        if let layer = metalView?.layer as? CAMetalLayer {
-            layer.wantsExtendedDynamicRangeContent = true
-        }
-        metalView?.clearColor = MTLClearColorMake(Self.edrClearValue, Self.edrClearValue, Self.edrClearValue, 1.0)
-    }
-
-    /// Flipping the clear color back to ≤1.0 alone did not reliably drop
-    /// `maximumExtendedDynamicRangeColorComponentValue` back to 1.0
-    /// (verified live: it stayed pinned at ~3.2). The layer's own
-    /// `wantsExtendedDynamicRangeContent` flag has to flip off too for the
-    /// window server to release the headroom reservation.
-    func disengageEDR() {
-        if let layer = metalView?.layer as? CAMetalLayer {
-            layer.wantsExtendedDynamicRangeContent = false
-        }
-        metalView?.clearColor = MTLClearColorMake(Self.identityClearValue, Self.identityClearValue, Self.identityClearValue, 1.0)
-    }
-
-    func draw(in view: MTKView) {
-        guard let commandQueue,
-              let descriptor = view.currentRenderPassDescriptor,
-              let buffer = commandQueue.makeCommandBuffer(),
-              let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor),
-              let drawable = view.currentDrawable else { return }
-        encoder.endEncoding()
-        buffer.present(drawable)
-        buffer.commit()
-    }
-
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 }

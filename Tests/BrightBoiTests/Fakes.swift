@@ -22,6 +22,8 @@ final class FakeDisplayBrightnessProvider: DisplayBrightnessProviding {
     private(set) var appliedPercentages: [Double] = []
     private(set) var adoptExternalNominalCallCount = 0
     var stubbedSupportsExtendedBrightness = true
+    var stubbedIsBuiltInDisplayAvailable = true
+    var onDisplayConfigurationChange: (() -> Void)?
     var stubbedOutcome: BrightnessApplyOutcome = .applied
     /// `nil` (the default) simulates a display that can't be read — the
     /// same as production hitting clamshell mode or a symbol that failed to
@@ -37,6 +39,10 @@ final class FakeDisplayBrightnessProvider: DisplayBrightnessProviding {
 
     func supportsExtendedBrightness() -> Bool {
         stubbedSupportsExtendedBrightness
+    }
+
+    var isBuiltInDisplayAvailable: Bool {
+        stubbedIsBuiltInDisplayAvailable
     }
 
     func currentNominalPercentage() -> Double? {

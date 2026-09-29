@@ -104,17 +104,33 @@ built-in displays:
    - `colorPixelFormat = .rgba16Float`
    - `colorspace = CGColorSpace(name: .extendedLinearSRGB)`
    - `layer.wantsExtendedDynamicRangeContent = true`
-   - cleared to a color value > 1.0 (e.g. `MTLClearColorMake(1.6, 1.6, 1.6, 1.0)`)
+
+   The EDR request is the layer's `wantsExtendedDynamicRangeContent` flag,
+   together with a frame actually presented to the window server. Pixel
+   values above 1.0 are not what triggers it: a fully transparent frame
+   engages the same headroom on macOS 27. BrightBoi presents a
+   near-invisible premultiplied value (`MTLClearColorMake(0.016, 0.016,
+   0.016, 0.01)`) rather than a fully transparent one only so that no
+   compositor has grounds to skip an empty layer; it has not been verified on
+   every supported macOS version whether transparent is safe everywhere.
 
    As soon as this renders one frame, **`NSScreen.main!.maximumExtendedDynamicRangeColorComponentValue`
-   jumps from `1.0` to `~3.2`** on this hardware (matches `1600/500`, the
-   panel's peak-to-nominal ratio — confirmed empirically, `attempt 1` in the
-   harness output, no polling loop needed past the first check).
+   climbs from `1.0` to `~3.2`** on this hardware (matches `1600/500`, the
+   panel's peak-to-nominal ratio), over roughly half a second to a second.
+   Gamma scaling must follow that ramp rather than run ahead of it, or the
+   highlights clip. The property that says whether a panel *can* boost at all
+   is `maximumPotentialExtendedDynamicRangeColorComponentValue` (`16.0` on
+   the XDR panel): the current value stays at `1.0` until something asks for
+   EDR, so it can't be used to detect support.
 
 2. **Scale the gamma table.** Capture the current transfer function with
-   `CGGetDisplayTransferByTable(displayID, 256, &r, &g, &b, &count)` (public,
-   documented CoreGraphics API), multiply every table entry by a `factor`,
-   and push it back with `CGSetDisplayTransferByTable`. With EDR engaged,
+   `CGGetDisplayTransferByTable(displayID, capacity, &r, &g, &b, &count)`
+   (public, documented CoreGraphics API; the built-in panel's table has 1024
+   samples, see `CGDisplayGammaTableCapacity`), multiply every table entry by
+   a `factor`, and push it back with `CGSetDisplayTransferByTable`. The
+   read-back never reports a sample above `1.0`: a scaled table reads back
+   clamped, so a scaled table shows as a plateau at the top of the range
+   rather than as a peak above identity. With EDR engaged,
    factors > 1.0 no longer clamp at white — they render into the unlocked
    headroom, which is what makes ordinary SDR desktop content appear
    brighter **system-wide** (not just inside the triggering app's own

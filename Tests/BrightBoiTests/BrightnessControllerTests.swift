@@ -25,6 +25,7 @@ struct BrightnessControllerTests {
         storedPercentage: Double? = nil,
         persistenceDebounceInterval: TimeInterval = 0.3,
         supportsExtendedBrightness: Bool = true,
+        isBuiltInDisplayAvailable: Bool = true,
         storedLaunchAtLoginEnabled: Bool? = nil,
         storedBoostCeiling: Double? = nil,
         storedKeyRemapEnabled: Bool? = nil,
@@ -50,6 +51,7 @@ struct BrightnessControllerTests {
         let callLog = CallLog()
         let displayBrightness = FakeDisplayBrightnessProvider()
         displayBrightness.stubbedSupportsExtendedBrightness = supportsExtendedBrightness
+        displayBrightness.stubbedIsBuiltInDisplayAvailable = isBuiltInDisplayAvailable
         displayBrightness.stubbedOutcome = stubbedDisplayApplyOutcome
         displayBrightness.stubbedCurrentNominalPercentage = stubbedCurrentNominalPercentage
         displayBrightness.callLog = callLog
@@ -811,6 +813,141 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.percentage == 100)
         #expect(fixture.controller.currentState.isBoosted == false)
         #expect(fixture.controller.currentState.boostBlockedByOtherApp == false)
+    }
+
+    @Test("a displayUnavailable outcome clamps the displayed percentage to 100 without flagging another app")
+    func displayUnavailableClampsToNominalCeiling() {
+        let fixture = makeFixture(stubbedDisplayApplyOutcome: .displayUnavailable)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.currentState.percentage == 100)
+        #expect(fixture.controller.currentState.boostBlockedByOtherApp == false)
+    }
+
+    // MARK: Built-in display coming and going
+
+    /// Flips what the fake display reports and fires its change callback, the
+    /// way the real provider does when the display configuration changes.
+    private func reconfigureDisplay(_ fixture: Fixture, available: Bool, supportsBoost: Bool) {
+        fixture.displayBrightness.stubbedIsBuiltInDisplayAvailable = available
+        fixture.displayBrightness.stubbedSupportsExtendedBrightness = supportsBoost
+        fixture.displayBrightness.onDisplayConfigurationChange?()
+    }
+
+    @Test("the controller listens for display changes only once started")
+    func displayChangeCallbackIsRegisteredByStart() {
+        let fixture = makeFixture(startController: false)
+        #expect(fixture.displayBrightness.onDisplayConfigurationChange == nil)
+        fixture.controller.start()
+        #expect(fixture.displayBrightness.onDisplayConfigurationChange != nil)
+    }
+
+    @Test("state reports the built-in display as available by default")
+    func builtInDisplayAvailableByDefault() {
+        let fixture = makeFixture()
+        #expect(fixture.controller.currentState.builtInDisplayAvailable == true)
+    }
+
+    @Test("state reports an unavailable built-in display from the start")
+    func builtInDisplayUnavailableAtInit() {
+        let fixture = makeFixture(supportsExtendedBrightness: false, isBuiltInDisplayAvailable: false)
+        #expect(fixture.controller.currentState.builtInDisplayAvailable == false)
+        #expect(fixture.controller.currentState.supportsBoost == false)
+    }
+
+    @Test("losing the built-in display drops a boosted level to 100 without driving any display")
+    func losingBuiltInDisplayClampsWithoutApplying() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        let appliedBefore = fixture.displayBrightness.appliedPercentages
+
+        reconfigureDisplay(fixture, available: false, supportsBoost: false)
+
+        #expect(fixture.controller.currentState.percentage == 100)
+        #expect(fixture.controller.currentState.isBoosted == false)
+        #expect(fixture.controller.currentState.supportsBoost == false)
+        #expect(fixture.controller.currentState.builtInDisplayAvailable == false)
+        #expect(fixture.displayBrightness.appliedPercentages == appliedBefore)
+    }
+
+    @Test("the saved level survives the built-in display being lost, and Boost comes back with it")
+    func boostLevelSurvivesDisplayLossAndReturn() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        fixture.controller.flushPendingPersist()
+
+        reconfigureDisplay(fixture, available: false, supportsBoost: false)
+        fixture.controller.flushPendingPersist()
+        #expect(fixture.persistence.storedPercentage == 150)
+
+        reconfigureDisplay(fixture, available: true, supportsBoost: true)
+
+        #expect(fixture.controller.currentState.percentage == 150)
+        #expect(fixture.controller.currentState.isBoosted == true)
+        #expect(fixture.controller.currentState.builtInDisplayAvailable == true)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 150)
+        fixture.controller.flushPendingPersist()
+        #expect(fixture.persistence.storedPercentage == 150)
+    }
+
+    @Test("a level restored below Boost because the session started without it comes back when Boost appears")
+    func persistedBoostLevelReturnsWhenBoostAppears() {
+        let fixture = makeFixture(storedPercentage: 150, supportsExtendedBrightness: false, isBuiltInDisplayAvailable: false)
+        #expect(fixture.controller.currentState.percentage == 100)
+
+        reconfigureDisplay(fixture, available: true, supportsBoost: true)
+
+        #expect(fixture.controller.currentState.percentage == 150)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 150)
+        #expect(fixture.persistence.storedPercentage == 150)
+    }
+
+    @Test("choosing a level while Boost is unavailable replaces the remembered Boost level")
+    func deliberateChangeForgetsRememberedBoostLevel() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        reconfigureDisplay(fixture, available: false, supportsBoost: false)
+
+        fixture.controller.setPercentage(60)
+        reconfigureDisplay(fixture, available: true, supportsBoost: true)
+
+        #expect(fixture.controller.currentState.percentage == 60)
+    }
+
+    @Test("a built-in display that returns without Boost support gets its current level re-applied")
+    func returningNonBoostDisplayReappliesCurrentLevel() {
+        let fixture = makeFixture(supportsExtendedBrightness: false, isBuiltInDisplayAvailable: false)
+        fixture.controller.setPercentage(60)
+        let appliedBefore = fixture.displayBrightness.appliedPercentages.count
+
+        reconfigureDisplay(fixture, available: true, supportsBoost: false)
+
+        #expect(fixture.displayBrightness.appliedPercentages.count == appliedBefore + 1)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 60)
+        #expect(fixture.controller.currentState.supportsBoost == false)
+    }
+
+    @Test("a display change notification that changes nothing the controller reads does nothing")
+    func unchangedDisplayConfigurationIsIgnored() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        let appliedBefore = fixture.displayBrightness.appliedPercentages
+
+        fixture.displayBrightness.onDisplayConfigurationChange?()
+
+        #expect(fixture.displayBrightness.appliedPercentages == appliedBefore)
+        #expect(fixture.controller.currentState.percentage == 150)
+    }
+
+    @Test("the level restored when Boost returns is re-clamped to the Boost Ceiling")
+    func returningBoostRespectsBoostCeiling() {
+        let fixture = makeFixture(storedBoostCeiling: 150)
+        fixture.controller.setPercentage(150)
+        reconfigureDisplay(fixture, available: false, supportsBoost: false)
+        fixture.controller.setBoostCeiling(120)
+
+        reconfigureDisplay(fixture, available: true, supportsBoost: true)
+
+        #expect(fixture.controller.currentState.percentage <= 120)
     }
 
     // MARK: Boost Ceiling

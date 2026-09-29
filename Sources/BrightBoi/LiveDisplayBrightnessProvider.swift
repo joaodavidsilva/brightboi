@@ -2,18 +2,21 @@ import AppKit
 import Foundation
 import CoreGraphics
 
-/// Real `DisplayBrightnessProviding`, built from ticket 02's documented
-/// findings (`docs/brightness-api-research.md`): the built-in display's
-/// Nominal range (0–100%) is driven via `DisplayServices.framework`'s
+/// Real `DisplayBrightnessProviding`. The built-in display's Nominal range
+/// (0–100%) is driven via `DisplayServices.framework`'s
 /// `DisplayServicesSetBrightness`, which takes the exact `Float` 0.0...1.0
 /// value Control Center's own slider reads and writes — no translation
 /// needed beyond dividing by 100.
 ///
 /// Extended Brightness / Boost (100–200%) is delegated to `BoostEngagement`
-/// (`BoostEngagement.swift`) — the *other* mechanism ticket 02 confirmed
-/// working, since there is no reliable private "set brightness past 1.0"
-/// symbol on this hardware/OS. Anchored per ADR-0002: factor 1.0 (500 nits,
-/// Nominal ceiling) at 100%, factor 2.0 (1000 nits sustained) at 200%.
+/// (`BoostEngagement.swift`), since there is no reliable private "set
+/// brightness past 1.0" symbol on this hardware/OS. Factor 1.0 (500 nits,
+/// the Nominal ceiling) at 100%, factor 2.0 (1000 nits sustained) at 200%.
+///
+/// Everything here targets the built-in display only. Its id is re-resolved
+/// whenever the display configuration changes (lid, hot-plug), and while no
+/// built-in display is online brightness control is simply unavailable — it
+/// is never redirected to an external monitor.
 ///
 /// `@MainActor`: satisfies `DisplayBrightnessProviding`'s isolation, and its
 /// own `NSScreen` lookups and `BoostEngagement` are main-thread-only anyway.
@@ -22,39 +25,78 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
     private typealias SetBrightnessFunc = @convention(c) (CGDirectDisplayID, Float) -> Int32
     private typealias GetBrightnessFunc = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
 
-    private let displayID: CGDirectDisplayID
+    private var displayID: CGDirectDisplayID?
     private let setBrightness: SetBrightnessFunc?
     private let getBrightness: GetBrightnessFunc?
     private let boostEngagement: BoostEngagement
+    private var lastReportedConfiguration: Configuration
+    private var screenParametersObserver: NSObjectProtocol?
+    /// The last Boost verdict per display id, so a momentary loss of the
+    /// panel's `NSScreen` does not flip Boost off and back on.
+    private var boostVerdict: (displayID: CGDirectDisplayID, supported: Bool)?
+
+    var onDisplayConfigurationChange: (() -> Void)?
+
+    /// What `onDisplayConfigurationChange` is about: a change in either
+    /// makes the controller re-evaluate.
+    private struct Configuration: Equatable {
+        var displayID: CGDirectDisplayID?
+        var supportsBoost: Bool
+        var isAvailable: Bool
+    }
 
     init() {
-        let displayID = Self.resolveBuiltInDisplayID()
+        let displayID = BuiltInDisplay.resolveID()
         self.displayID = displayID
         self.setBrightness = Self.loadSetBrightnessSymbol()
         self.getBrightness = Self.loadGetBrightnessSymbol()
         self.boostEngagement = BoostEngagement(displayID: displayID)
+        self.lastReportedConfiguration = Configuration(displayID: displayID, supportsBoost: false, isAvailable: false)
+        self.lastReportedConfiguration = currentConfiguration(displayID: displayID)
+        logHeadroom(displayID: displayID)
+        self.screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.displayConfigurationChanged()
+            }
+        }
+    }
+
+    isolated deinit {
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+        }
+    }
+
+    /// The built-in display is online and active. An online but inactive
+    /// panel (lid closed) has nothing to drive.
+    var isBuiltInDisplayAvailable: Bool {
+        guard let displayID else { return false }
+        return BuiltInDisplay.isActive(displayID)
     }
 
     func apply(percentage: Double) -> BrightnessApplyOutcome {
-        applyNominal(percentage: percentage)
+        guard let displayID, isBuiltInDisplayAvailable else { return .displayUnavailable }
+        applyNominal(percentage: percentage, displayID: displayID)
         return applyBoost(percentage: percentage)
     }
 
-    private func applyNominal(percentage: Double) {
+    private func applyNominal(percentage: Double, displayID: CGDirectDisplayID) {
         guard let setBrightness else { return }
         let nominalPercentage = min(max(percentage, 0), BrightnessController.nominalCeilingPercentage)
         let value = Float(nominalPercentage / BrightnessController.nominalCeilingPercentage)
         _ = setBrightness(displayID, value)
     }
 
-    /// `nil` when the symbol couldn't be loaded or the call itself fails
-    /// (return code != 0) — notably in clamshell mode, where
-    /// `resolveBuiltInDisplayID` falls back to `CGMainDisplayID()` (the
-    /// external display), which this getter can't read. A read-only call
+    /// `nil` when there is no built-in display, the symbol couldn't be
+    /// loaded, or the call itself fails (return code != 0). A read-only call
     /// with no side effects, so it's safe to call from `BrightnessController.init`
     /// as well as afterwards to notice a change made outside BrightBoi.
     func currentNominalPercentage() -> Double? {
-        guard let getBrightness else { return nil }
+        guard let displayID, let getBrightness else { return nil }
         var value: Float = 0
         let result = getBrightness(displayID, &value)
         guard result == 0 else { return nil }
@@ -69,16 +111,47 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         boostEngagement.disengage()
     }
 
-    /// Per ADR-0003: real EDR headroom (`maximumExtendedDynamicRangeColorComponentValue`
-    /// > 1.0) means Boost is physically available; ~1.0 means this Mac's
-    /// built-in display has no reserved headroom to exploit (e.g. MacBook
-    /// Air). No hardcoded Mac-model table.
+    /// Boost is available when the built-in display is online and its panel
+    /// could grant enough EDR headroom (`BoostHeadroom.hasBoostHeadroom`).
+    /// This reads the panel's *potential* headroom, never the granted one:
+    /// the granted value stays at 1.0 until some window asks for EDR, so it
+    /// would report an idle XDR MacBook Pro as unable to boost. No
+    /// hardcoded Mac-model table.
     func supportsExtendedBrightness() -> Bool {
-        let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
-        let builtInScreen = NSScreen.screens.first { screen in
-            (screen.deviceDescription[screenNumberKey] as? NSNumber)?.uint32Value == displayID
+        supportsBoost(displayID: displayID)
+    }
+
+    private func supportsBoost(displayID: CGDirectDisplayID?) -> Bool {
+        guard let displayID, BuiltInDisplay.isActive(displayID) else { return false }
+        let previous = boostVerdict.flatMap { $0.displayID == displayID ? $0.supported : nil }
+        let verdict = BoostHeadroom.boostSupport(
+            potential: BoostHeadroom.read(displayID: displayID)?.potential,
+            previousVerdict: previous
+        )
+        boostVerdict = (displayID, verdict)
+        return verdict
+    }
+
+    private func currentConfiguration(displayID: CGDirectDisplayID?) -> Configuration {
+        Configuration(
+            displayID: displayID,
+            supportsBoost: supportsBoost(displayID: displayID),
+            isAvailable: displayID.map(BuiltInDisplay.isActive) ?? false
+        )
+    }
+
+    /// Logged once at launch, so a report of Boost missing (or wrongly
+    /// offered) on some Mac shows the number the decision was made on.
+    private func logHeadroom(displayID: CGDirectDisplayID?) {
+        let message: String
+        if let displayID {
+            let potential = BoostHeadroom.read(displayID: displayID).map { "\($0.potential)" } ?? "unreadable (no screen)"
+            let verdict = supportsBoost(displayID: displayID) ? "Boost available" : "Boost unavailable"
+            message = "BrightBoi: built-in display \(displayID): potential EDR headroom \(potential), Boost needs at least \(BoostHeadroom.minimumPotentialForBoost): \(verdict)"
+        } else {
+            message = "BrightBoi: no built-in display online: brightness control unavailable"
         }
-        return (builtInScreen?.maximumExtendedDynamicRangeColorComponentValue ?? 1.0) > 1.0
+        FileHandle.standardError.write(Data((message + "\n").utf8))
     }
 
     private func applyBoost(percentage: Double) -> BrightnessApplyOutcome {
@@ -93,25 +166,26 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         return boostEngagement.engage(factor: factor)
     }
 
-    /// Per the spec's scope boundary (built-in display only, never an
-    /// external monitor): find the active display flagged built-in via
-    /// `CGDisplayIsBuiltin`, rather than assuming `CGMainDisplayID()` (which
-    /// would be wrong if an external display were set as the main display).
-    /// Falls back to `CGMainDisplayID()` in the unlikely case no built-in
-    /// display is reported active (e.g. closed-clamshell mode).
-    private static func resolveBuiltInDisplayID() -> CGDirectDisplayID {
-        var displayCount: UInt32 = 0
-        CGGetActiveDisplayList(0, nil, &displayCount)
-        var displays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-        CGGetActiveDisplayList(displayCount, &displays, &displayCount)
-
-        return displays.first(where: { CGDisplayIsBuiltin($0) != 0 }) ?? CGMainDisplayID()
+    /// Re-resolves the built-in display after the display configuration
+    /// changed (lid closed or opened, a display plugged or unplugged, the
+    /// arrangement changed). Boost follows first, so an overlay and a scaled
+    /// table are never left on a display that is gone; the controller is only
+    /// told when its answers to `isBuiltInDisplayAvailable` or
+    /// `supportsExtendedBrightness()` actually changed.
+    private func displayConfigurationChanged() {
+        let newID = BuiltInDisplay.resolveID()
+        boostEngagement.displayConfigurationChanged(displayID: newID)
+        displayID = newID
+        let configuration = currentConfiguration(displayID: newID)
+        guard configuration != lastReportedConfiguration else { return }
+        lastReportedConfiguration = configuration
+        onDisplayConfigurationChange?()
     }
 
     /// `DisplayServices.framework` is private and undocumented — Apple can
-    /// change or remove this symbol in a future macOS update (accepted risk,
-    /// see ADR-0001). If it can't be loaded, brightness changes become a
-    /// silent no-op rather than crashing the menu bar app.
+    /// change or remove this symbol in a future macOS update; that risk is
+    /// accepted. If it can't be loaded, brightness changes become a silent
+    /// no-op rather than crashing the menu bar app.
     private static func loadSetBrightnessSymbol() -> SetBrightnessFunc? {
         guard let handle = dlopen(
             "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices",
