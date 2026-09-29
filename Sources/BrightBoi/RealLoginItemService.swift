@@ -4,33 +4,32 @@ import ServiceManagement
 /// Real `LoginItemRegistering`, backed by `SMAppService.mainApp` — the
 /// current-macOS API for registering the app itself (no separate helper
 /// tool/LaunchAgent) as a login item, surfaced in System Settings' Login
-/// Items list. Only registers when not already `.enabled`, so a relaunch
-/// doesn't re-trigger registration every session.
+/// Items list. Deliberately thin: it neither skips a redundant `register()`
+/// nor swallows an error — `BrightnessController` reads `status` itself to
+/// decide whether calling `register()`/`unregister()` makes sense, and
+/// handles whatever they throw.
 final class RealLoginItemService: LoginItemRegistering {
-    func registerForLaunchAtLogin() {
-        let service = SMAppService.mainApp
-        guard service.status != .enabled else { return }
-
-        do {
-            try service.register()
-        } catch {
-            FileHandle.standardError.write(Data("BrightBoi: failed to register login item: \(error)\n".utf8))
-        }
+    var status: LoginItemStatus {
+        LoginItemStatus(SMAppService.mainApp.status)
     }
 
-    func unregisterFromLaunchAtLogin() {
-        let service = SMAppService.mainApp
-        // `.requiresApproval` still shows an entry in System Settings' Login
-        // Items pending approval — only `.notRegistered` means there's
-        // genuinely nothing left to remove. Mirroring the `.enabled`-only
-        // skip in `registerForLaunchAtLogin` here would leave a
-        // `.requiresApproval` entry behind after unchecking the box.
-        guard service.status != .notRegistered else { return }
+    func register() throws {
+        try SMAppService.mainApp.register()
+    }
 
-        do {
-            try service.unregister()
-        } catch {
-            FileHandle.standardError.write(Data("BrightBoi: failed to unregister login item: \(error)\n".utf8))
+    func unregister() throws {
+        try SMAppService.mainApp.unregister()
+    }
+}
+
+private extension LoginItemStatus {
+    init(_ status: SMAppService.Status) {
+        switch status {
+        case .enabled: self = .enabled
+        case .requiresApproval: self = .requiresApproval
+        case .notRegistered: self = .notRegistered
+        case .notFound: self = .notFound
+        @unknown default: self = .notFound
         }
     }
 }

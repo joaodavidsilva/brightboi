@@ -35,9 +35,12 @@ final class BrightnessHUDController {
             iconFillFraction: 0,
             supportsBoost: true,
             launchAtLoginEnabled: true,
+            launchAtLoginNeedsApproval: false,
+            launchAtLoginStatusMessage: nil,
             boostCeiling: BrightnessController.maximumPercentage,
             keyRemapEnabled: true,
-            keyRemapShortcut: .defaultShortcut
+            keyRemapShortcut: .defaultShortcut,
+            boostBlockedByOtherApp: false
         )
         let hostingView = NSHostingView(rootView: BrightnessHUDView(state: placeholderState))
         hostingView.frame = NSRect(origin: .zero, size: BrightnessHUDView.panelSize)

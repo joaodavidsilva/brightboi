@@ -28,7 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             persistence: persistence,
             keyTap: RealKeyTap(),
             powerSource: RealPowerSourceProvider(),
-            thermalState: RealThermalStateProvider()
+            thermalState: RealThermalStateProvider(),
+            bundleLocation: RealBundleLocationProvider()
         )
         self.permissions = PermissionsSnapshot(checker: RealPermissionsChecker())
         super.init()
@@ -50,6 +51,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard SingleInstanceGuard.acquire() else {
+            // Another, equal-or-newer copy is already running — don't touch
+            // brightness, gamma, auto-brightness, the login item or the key
+            // tap. `SingleInstanceGuard.acquire()` already signaled it.
+            exit(0)
+        }
+
+        let hud = hud
+        SingleInstanceGuard.observeReveal { [weak self] in
+            guard let self else { return }
+            hud.present(state: self.controller.currentState)
+        }
+
         controller.onKeyPress = { [hud] _, state in
             hud.present(state: state)
         }

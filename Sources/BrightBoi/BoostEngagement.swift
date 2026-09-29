@@ -24,6 +24,7 @@ import MetalKit
 /// Reimplemented independently from the technique description in
 /// `docs/brightness-api-research.md` — BrightIntosh (GPLv3) was read for
 /// research only, not copied.
+///
 /// `@MainActor`: `EDROverlayWindow` is main-thread-only (`NSWindow`/`MTKView`),
 /// and `apply(percentage:)` — the only caller of `engage`/`disengage` — is
 /// only ever driven synchronously from the main thread today (the slider
@@ -33,6 +34,11 @@ import MetalKit
 final class BoostEngagement {
     private let displayID: CGDirectDisplayID
     private var baselineGammaTable: GammaTable?
+    /// The table this instance itself last wrote to the display — compared
+    /// against the live table before `disengage()` restores anything, so a
+    /// second copy (or another booster) that took over the display in the
+    /// meantime doesn't get its table clobbered by a stale restore.
+    private var lastWrittenGammaTable: GammaTable?
     private var overlay: EDROverlayWindow?
     private var currentFactor: CGGammaValue = 1.0
     private var wakeObserver: NSObjectProtocol?
@@ -56,11 +62,22 @@ final class BoostEngagement {
         }
     }
 
-    func engage(factor: CGGammaValue) {
-        currentFactor = factor
+    /// Captures the display's current gamma table as the Boost baseline on
+    /// first engagement, then scales it by `factor` on every call. Refuses
+    /// to engage if the captured table already looks scaled — another
+    /// process (a second BrightBoi, or a third-party booster such as
+    /// BrightIntosh) is already boosting this display, and adopting its
+    /// table as the baseline would compound the scaling on top of theirs.
+    /// Also refuses if the capture itself fails, rather than silently
+    /// reporting success while nothing was actually scaled or mounted.
+    @discardableResult
+    func engage(factor: CGGammaValue) -> BrightnessApplyOutcome {
         if baselineGammaTable == nil {
-            baselineGammaTable = GammaTable.capture(displayID: displayID)
+            guard let captured = GammaTable.capture(displayID: displayID) else { return .captureFailed }
+            guard !captured.looksAlreadyBoosted else { return .boostBlockedByOtherApp }
+            baselineGammaTable = captured
         }
+        currentFactor = factor
         if overlay == nil {
             let overlay = EDROverlayWindow()
             overlay.mount()
@@ -68,7 +85,10 @@ final class BoostEngagement {
         } else if let overlay {
             overlay.engageEDR()
         }
-        baselineGammaTable?.scaled(by: factor).apply(to: displayID)
+        let scaled = baselineGammaTable?.scaled(by: factor)
+        scaled?.apply(to: displayID)
+        lastWrittenGammaTable = scaled
+        return .applied
     }
 
     func disengage() {
@@ -79,11 +99,25 @@ final class BoostEngagement {
         // this also called `CGDisplayRestoreColorSyncSettings()`, which
         // resets ColorSync for *every* connected display; removed as a real
         // scope violation, not just belt-and-suspenders.)
+        //
+        // Only restore if the table we last wrote is still the one live on
+        // the display — if it isn't, another process took over the display
+        // while this one was boosted, and writing our old baseline back
+        // would stomp on whatever that process left there.
+        if let lastWrittenGammaTable, let live = GammaTable.capture(displayID: displayID), !live.matches(lastWrittenGammaTable) {
+            self.baselineGammaTable = nil
+            self.lastWrittenGammaTable = nil
+            if let overlay {
+                overlay.disengageEDR()
+            }
+            return
+        }
         baselineGammaTable.apply(to: displayID)
         if let overlay {
             overlay.disengageEDR()
         }
         self.baselineGammaTable = nil
+        self.lastWrittenGammaTable = nil
     }
 
     /// Per `docs/brightness-api-research.md`: "the EDR overlay must persist
@@ -98,15 +132,28 @@ final class BoostEngagement {
     /// this can be revisited if drift is actually seen in practice.
     private func reapplyAfterWake() {
         guard let baselineGammaTable else { return }
-        baselineGammaTable.scaled(by: currentFactor).apply(to: displayID)
+        let scaled = baselineGammaTable.scaled(by: currentFactor)
+        scaled.apply(to: displayID)
+        lastWrittenGammaTable = scaled
     }
 }
 
 /// Wraps `CGGetDisplayTransferByTable`/`CGSetDisplayTransferByTable` (public,
 /// documented CoreGraphics APIs) at the 256-sample resolution the research
-/// spike verified works.
-private struct GammaTable {
+/// spike verified works. Not `private` so `BrightnessControllerTests`-style
+/// unit tests can exercise `looksAlreadyBoosted` and `matches` directly via
+/// `@testable import`.
+struct GammaTable: Equatable {
     static let sampleCount: UInt32 = 256
+
+    /// The live built-in panel's table peaks at `0.99999994`, comfortably
+    /// under 1.0 — a captured table whose peak clears this by more than
+    /// float noise has already been scaled by something else.
+    private static let alreadyBoostedThreshold: CGGammaValue = 1.0 + 1e-3
+
+    /// Read-back can be quantized to the hardware LUT, so an exact
+    /// floating-point match is too strict for "is this still our table".
+    private static let matchTolerance: CGGammaValue = 1e-3
 
     var red: [CGGammaValue]
     var green: [CGGammaValue]
@@ -123,6 +170,33 @@ private struct GammaTable {
             return nil
         }
         return GammaTable(red: red, green: green, blue: blue)
+    }
+
+    /// `true` when this table's peak sample is already well above identity
+    /// — the signal that whatever produced it had already scaled it up, per
+    /// `isAlreadyBoosted(red:green:blue:)`.
+    var looksAlreadyBoosted: Bool {
+        Self.isAlreadyBoosted(red: red, green: green, blue: blue)
+    }
+
+    /// Extracted as a pure function over raw samples (rather than reading
+    /// `self`) so tests can exercise it against an identity ramp, a ×2 ramp,
+    /// and a real vcgt-like ramp without constructing a `GammaTable` through
+    /// `capture`.
+    static func isAlreadyBoosted(red: [CGGammaValue], green: [CGGammaValue], blue: [CGGammaValue]) -> Bool {
+        let peak = [red, green, blue].compactMap { $0.max() }.max() ?? 0
+        return peak > alreadyBoostedThreshold
+    }
+
+    /// Per-sample comparison within `matchTolerance`, rather than exact
+    /// equality — used by `BoostEngagement.disengage()` to check the table
+    /// it's about to restore over is still the one it wrote, not another
+    /// process's table from taking over the display in the meantime.
+    func matches(_ other: GammaTable) -> Bool {
+        guard red.count == other.red.count, green.count == other.green.count, blue.count == other.blue.count else { return false }
+        return zip(red, other.red).allSatisfy { abs($0 - $1) <= Self.matchTolerance }
+            && zip(green, other.green).allSatisfy { abs($0 - $1) <= Self.matchTolerance }
+            && zip(blue, other.blue).allSatisfy { abs($0 - $1) <= Self.matchTolerance }
     }
 
     func scaled(by factor: CGGammaValue) -> GammaTable {

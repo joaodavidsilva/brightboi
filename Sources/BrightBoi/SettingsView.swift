@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 /// BrightBoi's Settings window (mockups 1d/2d): Boost Ceiling, Key Remap
@@ -32,47 +33,88 @@ struct SettingsView: View {
         }
         .padding(EdgeInsets(top: 20, leading: 22, bottom: 18, trailing: 22))
         .frame(width: 480)
+        .onAppear {
+            controller.refreshLaunchAtLoginStatus()
+        }
+        // SwiftUI doesn't reliably re-run `onAppear` when Settings is
+        // reopened, and System Settings' Login Items list can change
+        // BrightBoi's registration (approval, removal) without BrightBoi
+        // hearing about it directly — so also refresh whenever the app
+        // becomes active, whichever way that happens.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            controller.refreshLaunchAtLoginStatus()
+        }
     }
 
     // MARK: - General
 
     private func generalSection(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
         section(title: "General", palette: palette) {
-            VStack(spacing: 0) {
-                toggleRow(
-                    title: "Launch at login",
-                    isOn: Binding(
-                        get: { state.launchAtLoginEnabled },
-                        set: { controller.setLaunchAtLoginEnabled($0) }
-                    ),
-                    palette: palette
-                )
+            VStack(alignment: .leading, spacing: 6) {
+                VStack(spacing: 0) {
+                    toggleRow(
+                        title: "Launch at login",
+                        isOn: Binding(
+                            get: { state.launchAtLoginEnabled },
+                            set: { controller.setLaunchAtLoginEnabled($0) }
+                        ),
+                        palette: palette
+                    )
 
-                rowDivider(palette: palette)
+                    rowDivider(palette: palette)
 
-                toggleRow(
-                    title: remapToggleTitle(state.keyRemapShortcut),
-                    subtitle: "The brightness keys step in 5% jumps across the whole 0–200% range instead of stopping at 100%.",
-                    isOn: Binding(
-                        get: { state.keyRemapEnabled },
-                        set: { controller.setKeyRemapEnabled($0) }
-                    ),
-                    palette: palette
-                )
+                    toggleRow(
+                        title: remapToggleTitle(state.keyRemapShortcut),
+                        subtitle: "The brightness keys step in 5% jumps across the whole 0–200% range instead of stopping at 100%.",
+                        isOn: Binding(
+                            get: { state.keyRemapEnabled },
+                            set: { controller.setKeyRemapEnabled($0) }
+                        ),
+                        palette: palette
+                    )
 
-                rowDivider(palette: palette)
+                    rowDivider(palette: palette)
 
-                shortcutRow(title: "Raise", combo: state.keyRemapShortcut.raise, palette: palette) { newCombo in
-                    controller.setKeyRemapShortcut(KeyRemapShortcut(raise: newCombo, lower: state.keyRemapShortcut.lower))
+                    shortcutRow(title: "Raise", combo: state.keyRemapShortcut.raise, palette: palette) { newCombo in
+                        controller.setKeyRemapShortcut(KeyRemapShortcut(raise: newCombo, lower: state.keyRemapShortcut.lower))
+                    }
+
+                    rowDivider(palette: palette)
+
+                    shortcutRow(title: "Lower", combo: state.keyRemapShortcut.lower, palette: palette) { newCombo in
+                        controller.setKeyRemapShortcut(KeyRemapShortcut(raise: state.keyRemapShortcut.raise, lower: newCombo))
+                    }
                 }
+                .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
 
-                rowDivider(palette: palette)
-
-                shortcutRow(title: "Lower", combo: state.keyRemapShortcut.lower, palette: palette) { newCombo in
-                    controller.setKeyRemapShortcut(KeyRemapShortcut(raise: state.keyRemapShortcut.raise, lower: newCombo))
-                }
+                launchAtLoginNotice(state: state, palette: palette)
             }
-            .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
+        }
+    }
+
+    /// Explains why the switch above doesn't match what the user might
+    /// expect: approval pending in System Settings, or registration withheld
+    /// because BrightBoi isn't running from a proper Applications location.
+    /// A thrown registration/unregistration error takes the same slot.
+    @ViewBuilder
+    private func launchAtLoginNotice(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
+        if state.launchAtLoginNeedsApproval {
+            HStack {
+                Text("Needs approval in System Settings → Login Items.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.secondaryText)
+                Spacer()
+                Button("Open Login Items") {
+                    SMAppService.openSystemSettingsLoginItems()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(palette.rowText)
+            }
+        } else if let message = state.launchAtLoginStatusMessage {
+            Text(message)
+                .font(.system(size: 11))
+                .foregroundStyle(palette.secondaryText)
         }
     }
 

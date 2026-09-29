@@ -7,6 +7,7 @@ import Foundation
 final class RealBrightnessPersistence: BrightnessPersisting {
     private static let percentageKey = "com.ptlghost.BrightBoi.percentage"
     private static let launchAtLoginEnabledKey = "com.ptlghost.BrightBoi.launchAtLoginEnabled"
+    private static let lastRegisteredLoginItemPathKey = "com.ptlghost.BrightBoi.lastRegisteredLoginItemPath"
     private static let boostCeilingKey = "com.ptlghost.BrightBoi.boostCeiling"
     private static let keyRemapShortcutKey = "com.ptlghost.BrightBoi.keyRemapShortcut"
     private static let keyRemapEnabledKey = "com.ptlghost.BrightBoi.keyRemapEnabled"
@@ -45,6 +46,18 @@ final class RealBrightnessPersistence: BrightnessPersisting {
     /// unconditional registration behavior for upgrading users.
     func loadLaunchAtLoginEnabled() -> Bool? {
         defaults.object(forKey: Self.launchAtLoginEnabledKey) as? Bool
+    }
+
+    func save(lastRegisteredLoginItemPath: String) {
+        defaults.set(lastRegisteredLoginItemPath, forKey: Self.lastRegisteredLoginItemPathKey)
+    }
+
+    /// `nil` until the first successful `register()` — `BrightnessController`
+    /// treats that as "never registered before", as opposed to "registered,
+    /// then the user removed it" once a real status of `.notRegistered`/
+    /// `.notFound` comes back.
+    func loadLastRegisteredLoginItemPath() -> String? {
+        defaults.string(forKey: Self.lastRegisteredLoginItemPathKey)
     }
 
     func save(boostCeiling: Double) {

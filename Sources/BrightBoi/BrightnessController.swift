@@ -5,8 +5,8 @@ import Observation
 /// The single seam the whole app is built around. Internally depends only on
 /// small protocols for every system-facing effect (`DisplayBrightnessProviding`,
 /// `AutoBrightnessToggling`, `LoginItemRegistering`, `BrightnessPersisting`,
-/// `KeyTapControlling`) — real implementations arrive in later tickets; this
-/// ticket establishes the seam and its fully-fake-backed test suite.
+/// `KeyTapControlling`, `BundleLocationProviding`) — this keeps every real
+/// system effect fake-able in tests.
 ///
 /// `@Observable` so the menu bar UI (slider, live icon) re-renders as
 /// `currentState` changes, without needing a separate published wrapper.
@@ -41,15 +41,25 @@ final class BrightnessController {
     nonisolated static let thermalSeriousDeliveredOffset: Double = 20
     nonisolated static let thermalCriticalDeliveredOffset: Double = 40
 
+    private static let moveToApplicationsMessage = "Move BrightBoi to Applications to launch at login."
+
     struct State: Equatable {
         var percentage: Double
         var isBoosted: Bool
         var iconFillFraction: Double
         var supportsBoost: Bool
         var launchAtLoginEnabled: Bool
+        var launchAtLoginNeedsApproval: Bool
+        var launchAtLoginStatusMessage: String?
         var boostCeiling: Double
         var keyRemapEnabled: Bool
         var keyRemapShortcut: KeyRemapShortcut
+
+        /// `true` once an attempt to go past 100% was refused because
+        /// another process already holds this display's EDR headroom — see
+        /// `BoostEngagement`'s capture guard. Reset on the next attempt,
+        /// whether or not it succeeds.
+        var boostBlockedByOtherApp: Bool
 
         /// 5 nits per percentage point — 100% is the old 500-nit Nominal
         /// ceiling, 200% is the 1000-nit Boost ceiling, per ADR-0002.
@@ -92,6 +102,7 @@ final class BrightnessController {
     private let keyTap: KeyTapControlling
     private let powerSource: PowerSourceProviding
     private let thermalState: ThermalStateProviding
+    private let bundleLocation: BundleLocationProviding
 
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
@@ -100,6 +111,7 @@ final class BrightnessController {
     private var keyRemapEnabled: Bool
     private var keyRemapShortcut: KeyRemapShortcut
     private var hasStarted = false
+    private var lastLaunchAtLoginError: String?
     @ObservationIgnored
     private var pendingPersistWorkItem: DispatchWorkItem?
 
@@ -117,6 +129,7 @@ final class BrightnessController {
         keyTap: KeyTapControlling,
         powerSource: PowerSourceProviding,
         thermalState: ThermalStateProviding,
+        bundleLocation: BundleLocationProviding,
         keyStepPercentage: Double = percentageGranularity,
         persistenceDebounceInterval: TimeInterval = 0.3
     ) {
@@ -127,6 +140,7 @@ final class BrightnessController {
         self.keyTap = keyTap
         self.powerSource = powerSource
         self.thermalState = thermalState
+        self.bundleLocation = bundleLocation
         self.keyStepPercentage = keyStepPercentage
         self.persistenceDebounceInterval = persistenceDebounceInterval
 
@@ -151,31 +165,35 @@ final class BrightnessController {
         let restoredPercentage = Self.resolvedPercentage(persistence.loadPercentage() ?? Self.minimumPercentage, effectiveMaximum: boostAwareCeiling)
         // `nil` (fresh install) defaults to `true`, matching the app's
         // previous unconditional registration behavior for upgrading users.
+        // `start()` reconciles this against the real login-item status
+        // before it ever reaches a view.
         let launchAtLoginEnabled = persistence.loadLaunchAtLoginEnabled() ?? true
         self.currentState = Self.state(
             for: restoredPercentage,
             supportsBoost: supportsBoost,
             launchAtLoginEnabled: launchAtLoginEnabled,
+            launchAtLoginNeedsApproval: false,
+            launchAtLoginStatusMessage: nil,
             boostCeiling: boostCeiling,
             keyRemapEnabled: keyRemapEnabled,
-            keyRemapShortcut: keyRemapShortcut
+            keyRemapShortcut: keyRemapShortcut,
+            boostBlockedByOtherApp: false
         )
     }
 
     /// Fires every session-start-only side effect exactly once: applies the
     /// restored percentage to the real display, disables macOS's native
-    /// auto-brightness, registers the login item, and starts the key tap.
-    /// Called from `AppDelegate.applicationDidFinishLaunching`, once `NSApp`
-    /// has actually finished launching. Calling it again is a no-op.
+    /// auto-brightness, reconciles/attempts login-item registration, and
+    /// starts the key tap. Called from
+    /// `AppDelegate.applicationDidFinishLaunching`, once `NSApp` has
+    /// actually finished launching. Calling it again is a no-op.
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
 
-        displayBrightness.apply(percentage: currentState.percentage)
+        applyToDisplay(percentage: currentState.percentage)
         autoBrightnessToggle.disableAutoBrightness()
-        if currentState.launchAtLoginEnabled {
-            loginItemService.registerForLaunchAtLogin()
-        }
+        syncLaunchAtLoginAtStart()
         if keyRemapEnabled {
             startKeyTap(remap: keyRemapShortcut)
         }
@@ -183,9 +201,8 @@ final class BrightnessController {
 
     func setPercentage(_ percentage: Double) {
         let resolved = Self.resolvedPercentage(percentage, effectiveMaximum: currentEffectiveMaximum)
-        currentState = updatedState(percentage: resolved)
-        displayBrightness.apply(percentage: resolved)
-        schedulePersist(resolved)
+        applyToDisplay(percentage: resolved)
+        schedulePersist(currentState.percentage)
     }
 
     func handleKeyPress(_ press: KeyPress) {
@@ -195,13 +212,50 @@ final class BrightnessController {
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
-        currentState = updatedState(percentage: currentState.percentage, launchAtLoginEnabled: enabled)
         persistence.save(launchAtLoginEnabled: enabled)
         if enabled {
-            loginItemService.registerForLaunchAtLogin()
+            if bundleLocation.isInApplicationsFolder, !bundleLocation.isTranslocatedOrReadOnly {
+                do {
+                    try loginItemService.register()
+                    persistence.save(lastRegisteredLoginItemPath: bundleLocation.bundlePath)
+                } catch {
+                    lastLaunchAtLoginError = error.localizedDescription
+                }
+            }
         } else {
-            loginItemService.unregisterFromLaunchAtLogin()
+            do {
+                try loginItemService.unregister()
+            } catch {
+                lastLaunchAtLoginError = error.localizedDescription
+            }
         }
+        refreshLaunchAtLoginStatus()
+    }
+
+    /// Re-reads the real login-item status and derives every launch-at-login
+    /// field in `currentState` from it, rather than trusting the last call
+    /// this controller happened to make — System Settings' Login Items list
+    /// can change BrightBoi's registration (approval, removal) without
+    /// BrightBoi hearing about it directly. Call from Settings' `onAppear`
+    /// and whenever the app becomes active, since neither alone is reliable:
+    /// SwiftUI doesn't always re-run `onAppear` when Settings is reopened,
+    /// and this accessory app is rarely the active one.
+    func refreshLaunchAtLoginStatus() {
+        let status = loginItemService.status
+        let message = lastLaunchAtLoginError ?? locationNotice(for: status)
+        lastLaunchAtLoginError = nil
+
+        currentState = Self.state(
+            for: currentState.percentage,
+            supportsBoost: supportsBoost,
+            launchAtLoginEnabled: status == .enabled || status == .requiresApproval,
+            launchAtLoginNeedsApproval: status == .requiresApproval,
+            launchAtLoginStatusMessage: message,
+            boostCeiling: boostCeiling,
+            keyRemapEnabled: keyRemapEnabled,
+            keyRemapShortcut: keyRemapShortcut,
+            boostBlockedByOtherApp: currentState.boostBlockedByOtherApp
+        )
     }
 
     /// Bounded `[100, 200]` per ADR-0004 — the floor keeps an accidental drag
@@ -287,14 +341,100 @@ final class BrightnessController {
         }
     }
 
+    /// Applies `percentage` to the real display and folds the outcome into
+    /// `currentState`. Any outcome other than `.applied` — another process
+    /// already holding this display's EDR headroom, or a failed gamma
+    /// capture — clamps the displayed percentage down to Nominal's 100%
+    /// ceiling rather than showing a number the display never actually
+    /// reached; only the former also raises the "another app" banner, since
+    /// a capture failure isn't caused by another app.
+    private func applyToDisplay(percentage: Double) {
+        let outcome = displayBrightness.apply(percentage: percentage)
+        let blockedByOtherApp = outcome == .boostBlockedByOtherApp
+        let effectivePercentage = outcome == .applied ? percentage : min(percentage, Self.nominalCeilingPercentage)
+        currentState = updatedState(percentage: effectivePercentage, boostBlockedByOtherApp: blockedByOtherApp)
+    }
+
+    // MARK: - Launch at login
+
+    /// Called once from `start()`. `currentState.launchAtLoginEnabled` is
+    /// always derived fresh from `loginItemService.status` afterwards (see
+    /// `refreshLaunchAtLoginStatus`), so this only decides whether to *act*:
+    /// register when this copy has never successfully registered before
+    /// (a true first launch, or an earlier attempt withheld by location),
+    /// re-point the item if the bundle moved since it last registered, or —
+    /// if it was registered before and is gone now — treat that as the user
+    /// having removed it in System Settings, not as something to silently
+    /// undo on every subsequent launch.
+    private func syncLaunchAtLoginAtStart() {
+        guard persistence.loadLaunchAtLoginEnabled() ?? true else {
+            refreshLaunchAtLoginStatus()
+            return
+        }
+
+        switch loginItemService.status {
+        case .enabled, .requiresApproval:
+            repointLoginItemIfBundleMoved()
+        case .notRegistered, .notFound:
+            if persistence.loadLastRegisteredLoginItemPath() == nil {
+                attemptRegistration()
+            } else {
+                persistence.save(launchAtLoginEnabled: false)
+            }
+        @unknown default:
+            break
+        }
+
+        refreshLaunchAtLoginStatus()
+    }
+
+    /// Never registers from a bare executable, App Translocation, a mounted
+    /// DMG, or anywhere outside an Applications folder — Background Task
+    /// Management stores a concrete URL for the login item, and none of
+    /// those paths still exist next login.
+    @discardableResult
+    private func attemptRegistration() -> Bool {
+        guard bundleLocation.isInApplicationsFolder, !bundleLocation.isTranslocatedOrReadOnly else { return false }
+        do {
+            try loginItemService.register()
+            persistence.save(lastRegisteredLoginItemPath: bundleLocation.bundlePath)
+            return true
+        } catch {
+            lastLaunchAtLoginError = error.localizedDescription
+            return false
+        }
+    }
+
+    private func repointLoginItemIfBundleMoved() {
+        guard bundleLocation.isInApplicationsFolder, !bundleLocation.isTranslocatedOrReadOnly,
+              let lastPath = persistence.loadLastRegisteredLoginItemPath(), lastPath != bundleLocation.bundlePath else { return }
+        do {
+            try loginItemService.unregister()
+            try loginItemService.register()
+            persistence.save(lastRegisteredLoginItemPath: bundleLocation.bundlePath)
+        } catch {
+            lastLaunchAtLoginError = error.localizedDescription
+        }
+    }
+
+    /// The explanatory line Settings shows under the switch while the user
+    /// wants launch-at-login on but BrightBoi is withholding registration
+    /// because of where it's currently running from.
+    private func locationNotice(for status: LoginItemStatus) -> String? {
+        guard status == .notRegistered || status == .notFound else { return nil }
+        guard persistence.loadLaunchAtLoginEnabled() ?? true else { return nil }
+        guard !(bundleLocation.isInApplicationsFolder && !bundleLocation.isTranslocatedOrReadOnly) else { return nil }
+        return Self.moveToApplicationsMessage
+    }
+
     /// The ceiling `setPercentage`/key presses actually clamp against: the
     /// user's configured Boost Ceiling on an XDR Mac, or the fixed Nominal
     /// ceiling on a non-XDR Mac where Boost — and therefore a configurable
     /// ceiling — doesn't apply. Distinct from the static, hardware-only
     /// `effectiveMaximum(supportsBoost:)` the popover's slider/icon still use
-    /// (ticket 01) — that track intentionally keeps its fixed 0...200 domain
-    /// regardless of a personal ceiling; only how far a set percentage is
-    /// allowed to travel changes here.
+    /// — that track intentionally keeps its fixed 0...200 domain regardless
+    /// of a personal ceiling; only how far a set percentage is allowed to
+    /// travel changes here.
     private var currentEffectiveMaximum: Double {
         supportsBoost ? boostCeiling : Self.nominalCeilingPercentage
     }
@@ -302,14 +442,17 @@ final class BrightnessController {
     /// Rebuilds `currentState` from the live percentage plus whichever
     /// stored properties haven't changed, defaulting every other field to
     /// its current `currentState` value or the controller's own stored copy.
-    private func updatedState(percentage: Double, launchAtLoginEnabled: Bool? = nil) -> State {
+    private func updatedState(percentage: Double, launchAtLoginEnabled: Bool? = nil, boostBlockedByOtherApp: Bool? = nil) -> State {
         Self.state(
             for: percentage,
             supportsBoost: supportsBoost,
             launchAtLoginEnabled: launchAtLoginEnabled ?? currentState.launchAtLoginEnabled,
+            launchAtLoginNeedsApproval: currentState.launchAtLoginNeedsApproval,
+            launchAtLoginStatusMessage: currentState.launchAtLoginStatusMessage,
             boostCeiling: boostCeiling,
             keyRemapEnabled: keyRemapEnabled,
-            keyRemapShortcut: keyRemapShortcut
+            keyRemapShortcut: keyRemapShortcut,
+            boostBlockedByOtherApp: boostBlockedByOtherApp ?? currentState.boostBlockedByOtherApp
         )
     }
 
@@ -326,10 +469,10 @@ final class BrightnessController {
     /// On a non-XDR Mac, Nominal Brightness (0...100) is the entire reachable
     /// range — Boost doesn't exist there, so both the clamp ceiling and the
     /// icon's "full" mark move to 100 rather than staying pinned at 200.
-    /// Not `private` — the popover's quick-set row and custom slider (ticket
-    /// 01) need the same rule to compute "Max boi" and the track's fill
-    /// fraction, and having three independent copies of this ternary was a
-    /// real duplication risk once ticket 02 makes the ceiling configurable.
+    /// Not `private` — the popover's quick-set row and custom slider need
+    /// the same rule to compute "Max boi" and the track's fill fraction, and
+    /// having three independent copies of this ternary was a real
+    /// duplication risk once the Boost Ceiling became configurable.
     /// `nonisolated`: called from SwiftUI view code that isn't itself
     /// main-actor-isolated.
     nonisolated static func effectiveMaximum(supportsBoost: Bool) -> Double {
@@ -361,9 +504,12 @@ final class BrightnessController {
         for percentage: Double,
         supportsBoost: Bool,
         launchAtLoginEnabled: Bool,
+        launchAtLoginNeedsApproval: Bool,
+        launchAtLoginStatusMessage: String?,
         boostCeiling: Double,
         keyRemapEnabled: Bool,
-        keyRemapShortcut: KeyRemapShortcut
+        keyRemapShortcut: KeyRemapShortcut,
+        boostBlockedByOtherApp: Bool
     ) -> State {
         State(
             percentage: percentage,
@@ -371,9 +517,12 @@ final class BrightnessController {
             iconFillFraction: percentage / effectiveMaximum(supportsBoost: supportsBoost),
             supportsBoost: supportsBoost,
             launchAtLoginEnabled: launchAtLoginEnabled,
+            launchAtLoginNeedsApproval: launchAtLoginNeedsApproval,
+            launchAtLoginStatusMessage: launchAtLoginStatusMessage,
             boostCeiling: boostCeiling,
             keyRemapEnabled: keyRemapEnabled,
-            keyRemapShortcut: keyRemapShortcut
+            keyRemapShortcut: keyRemapShortcut,
+            boostBlockedByOtherApp: boostBlockedByOtherApp
         )
     }
 }

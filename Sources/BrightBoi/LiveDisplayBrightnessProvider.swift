@@ -14,6 +14,7 @@ import CoreGraphics
 /// working, since there is no reliable private "set brightness past 1.0"
 /// symbol on this hardware/OS. Anchored per ADR-0002: factor 1.0 (500 nits,
 /// Nominal ceiling) at 100%, factor 2.0 (1000 nits sustained) at 200%.
+///
 /// `@MainActor`: satisfies `DisplayBrightnessProviding`'s isolation, and its
 /// own `NSScreen` lookups and `BoostEngagement` are main-thread-only anyway.
 @MainActor
@@ -31,9 +32,9 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         self.boostEngagement = BoostEngagement(displayID: displayID)
     }
 
-    func apply(percentage: Double) {
+    func apply(percentage: Double) -> BrightnessApplyOutcome {
         applyNominal(percentage: percentage)
-        applyBoost(percentage: percentage)
+        return applyBoost(percentage: percentage)
     }
 
     private func applyNominal(percentage: Double) {
@@ -55,16 +56,16 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         return (builtInScreen?.maximumExtendedDynamicRangeColorComponentValue ?? 1.0) > 1.0
     }
 
-    private func applyBoost(percentage: Double) {
+    private func applyBoost(percentage: Double) -> BrightnessApplyOutcome {
         guard percentage > BrightnessController.nominalCeilingPercentage else {
             boostEngagement.disengage()
-            return
+            return .applied
         }
 
         let boostRange = BrightnessController.maximumPercentage - BrightnessController.nominalCeilingPercentage
         let boostFraction = min(max(percentage - BrightnessController.nominalCeilingPercentage, 0), boostRange) / boostRange
         let factor = CGGammaValue(1.0 + boostFraction)
-        boostEngagement.engage(factor: factor)
+        return boostEngagement.engage(factor: factor)
     }
 
     /// Per the spec's scope boundary (built-in display only, never an

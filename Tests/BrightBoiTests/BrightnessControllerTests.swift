@@ -16,6 +16,7 @@ struct BrightnessControllerTests {
         let keyTap: FakeKeyTap
         let powerSource: FakePowerSourceProvider
         let thermalState: FakeThermalStateProvider
+        let bundleLocation: FakeBundleLocationProvider
     }
 
     private func makeFixture(
@@ -27,23 +28,43 @@ struct BrightnessControllerTests {
         storedKeyRemapEnabled: Bool? = nil,
         storedKeyRemapShortcut: KeyRemapShortcut? = nil,
         isOnBatteryPower: Bool = false,
-        stubbedThermalState: ProcessInfo.ThermalState = .nominal
+        stubbedThermalState: ProcessInfo.ThermalState = .nominal,
+        storedHasCompletedOnboarding: Bool? = true,
+        storedLastRegisteredLoginItemPath: String? = nil,
+        stubbedLoginItemStatus: LoginItemStatus = .notRegistered,
+        stubbedRegisterError: Error? = nil,
+        stubbedUnregisterError: Error? = nil,
+        bundlePath: String = "/Applications/BrightBoi.app",
+        isInApplicationsFolder: Bool = true,
+        isTranslocatedOrReadOnly: Bool = false,
+        stubbedDisplayApplyOutcome: BrightnessApplyOutcome = .applied,
+        startController: Bool = true
     ) -> Fixture {
         let displayBrightness = FakeDisplayBrightnessProvider()
         displayBrightness.stubbedSupportsExtendedBrightness = supportsExtendedBrightness
+        displayBrightness.stubbedOutcome = stubbedDisplayApplyOutcome
         let autoBrightnessToggle = FakeAutoBrightnessToggle()
         let loginItemService = FakeLoginItemService()
+        loginItemService.stubbedStatus = stubbedLoginItemStatus
+        loginItemService.stubbedRegisterError = stubbedRegisterError
+        loginItemService.stubbedUnregisterError = stubbedUnregisterError
         let persistence = FakeBrightnessPersistence()
         persistence.storedPercentage = storedPercentage
         persistence.storedLaunchAtLoginEnabled = storedLaunchAtLoginEnabled
         persistence.storedBoostCeiling = storedBoostCeiling
         persistence.storedKeyRemapEnabled = storedKeyRemapEnabled
         persistence.storedKeyRemapShortcut = storedKeyRemapShortcut
+        persistence.storedHasCompletedOnboarding = storedHasCompletedOnboarding
+        persistence.storedLastRegisteredLoginItemPath = storedLastRegisteredLoginItemPath
         let keyTap = FakeKeyTap()
         let powerSource = FakePowerSourceProvider()
         powerSource.stubbedIsOnBatteryPower = isOnBatteryPower
         let thermalState = FakeThermalStateProvider()
         thermalState.stubbedThermalState = stubbedThermalState
+        let bundleLocation = FakeBundleLocationProvider()
+        bundleLocation.bundlePath = bundlePath
+        bundleLocation.isInApplicationsFolder = isInApplicationsFolder
+        bundleLocation.isTranslocatedOrReadOnly = isTranslocatedOrReadOnly
 
         let controller = BrightnessController(
             displayBrightness: displayBrightness,
@@ -53,9 +74,12 @@ struct BrightnessControllerTests {
             keyTap: keyTap,
             powerSource: powerSource,
             thermalState: thermalState,
+            bundleLocation: bundleLocation,
             persistenceDebounceInterval: persistenceDebounceInterval
         )
-        controller.start()
+        if startController {
+            controller.start()
+        }
 
         return Fixture(
             controller: controller,
@@ -65,7 +89,8 @@ struct BrightnessControllerTests {
             persistence: persistence,
             keyTap: keyTap,
             powerSource: powerSource,
-            thermalState: thermalState
+            thermalState: thermalState,
+            bundleLocation: bundleLocation
         )
     }
 
@@ -382,6 +407,120 @@ struct BrightnessControllerTests {
         #expect(fixture.loginItemService.registerCallCount == 1)
         #expect(fixture.persistence.storedLaunchAtLoginEnabled == true)
         #expect(fixture.controller.currentState.launchAtLoginEnabled == true)
+    }
+
+    // MARK: Launch-at-login — location gating
+
+    @Test("never registers while running from outside an Applications folder, and explains why")
+    func doesNotRegisterOutsideApplicationsFolder() {
+        let fixture = makeFixture(isInApplicationsFolder: false)
+        #expect(fixture.loginItemService.registerCallCount == 0)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == false)
+        #expect(fixture.controller.currentState.launchAtLoginStatusMessage != nil)
+    }
+
+    @Test("never registers while translocated or read-only, even inside an Applications folder path")
+    func doesNotRegisterWhileTranslocated() {
+        let fixture = makeFixture(isTranslocatedOrReadOnly: true)
+        #expect(fixture.loginItemService.registerCallCount == 0)
+        #expect(fixture.controller.currentState.launchAtLoginStatusMessage != nil)
+    }
+
+    @Test("re-points the login item when the bundle path changed since it was last registered")
+    func repointsLoginItemAfterBundleMoved() {
+        let fixture = makeFixture(
+            storedLastRegisteredLoginItemPath: "/Users/me/Downloads/BrightBoi.app",
+            stubbedLoginItemStatus: .enabled,
+            bundlePath: "/Applications/BrightBoi.app"
+        )
+        #expect(fixture.loginItemService.unregisterCallCount == 1)
+        #expect(fixture.loginItemService.registerCallCount == 1)
+        #expect(fixture.persistence.storedLastRegisteredLoginItemPath == "/Applications/BrightBoi.app")
+    }
+
+    @Test("does not re-point when the bundle path is unchanged")
+    func doesNotRepointWhenPathUnchanged() {
+        let fixture = makeFixture(
+            storedLastRegisteredLoginItemPath: "/Applications/BrightBoi.app",
+            stubbedLoginItemStatus: .enabled,
+            bundlePath: "/Applications/BrightBoi.app"
+        )
+        #expect(fixture.loginItemService.unregisterCallCount == 0)
+        #expect(fixture.loginItemService.registerCallCount == 0)
+    }
+
+    @Test("a login item that was registered before and is now gone is treated as a user removal, not re-registered")
+    func respectsUserRemovalInsteadOfReregistering() {
+        let fixture = makeFixture(
+            storedLastRegisteredLoginItemPath: "/Applications/BrightBoi.app",
+            stubbedLoginItemStatus: .notRegistered
+        )
+        #expect(fixture.loginItemService.registerCallCount == 0)
+        #expect(fixture.persistence.storedLaunchAtLoginEnabled == false)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == false)
+    }
+
+    @Test("never registered before and withheld by location earlier retries once the location is valid again")
+    func retriesRegistrationWhenNeverRegisteredBefore() {
+        let fixture = makeFixture(storedLastRegisteredLoginItemPath: nil, stubbedLoginItemStatus: .notRegistered)
+        #expect(fixture.loginItemService.registerCallCount == 1)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == true)
+    }
+
+    // MARK: Launch-at-login — real status, errors, approval
+
+    @Test("requiresApproval shows the switch on with needsApproval set")
+    func requiresApprovalShowsOnWithNeedsApproval() {
+        let fixture = makeFixture(storedLastRegisteredLoginItemPath: "/Applications/BrightBoi.app", stubbedLoginItemStatus: .requiresApproval)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == true)
+        #expect(fixture.controller.currentState.launchAtLoginNeedsApproval == true)
+    }
+
+    @Test("a thrown registration error is surfaced and the switch reverts to off")
+    func registrationErrorIsSurfacedAndSwitchRevertsOff() {
+        let fixture = makeFixture(storedLaunchAtLoginEnabled: false)
+        fixture.loginItemService.stubbedRegisterError = FakeLoginItemError(message: "could not register")
+        fixture.controller.setLaunchAtLoginEnabled(true)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == false)
+        #expect(fixture.controller.currentState.launchAtLoginStatusMessage == "could not register")
+    }
+
+    @Test("refreshLaunchAtLoginStatus re-reads the real status, e.g. after the user removes the item while running")
+    func refreshPicksUpRemovalWhileRunning() {
+        let fixture = makeFixture(storedLastRegisteredLoginItemPath: "/Applications/BrightBoi.app", stubbedLoginItemStatus: .enabled)
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == true)
+
+        fixture.loginItemService.stubbedStatus = .notRegistered
+        fixture.controller.refreshLaunchAtLoginStatus()
+
+        #expect(fixture.controller.currentState.launchAtLoginEnabled == false)
+    }
+
+    // MARK: Boost blocked by another app
+
+    @Test("a boost-blocked outcome clamps the displayed percentage to 100 and flags boostBlockedByOtherApp")
+    func boostBlockedClampsToNominalCeiling() {
+        let fixture = makeFixture(stubbedDisplayApplyOutcome: .boostBlockedByOtherApp)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.currentState.percentage == 100)
+        #expect(fixture.controller.currentState.isBoosted == false)
+        #expect(fixture.controller.currentState.boostBlockedByOtherApp == true)
+    }
+
+    @Test("an applied outcome below 100% never sets boostBlockedByOtherApp")
+    func appliedOutcomeBelowCeilingLeavesFlagClear() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        #expect(fixture.controller.currentState.boostBlockedByOtherApp == false)
+    }
+
+    @Test("a captureFailed outcome clamps the displayed percentage to 100 without flagging boostBlockedByOtherApp")
+    func captureFailedClampsToNominalCeilingWithoutOtherAppFlag() {
+        let fixture = makeFixture(stubbedDisplayApplyOutcome: .captureFailed)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.currentState.percentage == 100)
+        #expect(fixture.controller.currentState.isBoosted == false)
+        #expect(fixture.controller.currentState.boostBlockedByOtherApp == false)
     }
 
     // MARK: Boost Ceiling

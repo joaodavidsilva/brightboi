@@ -44,8 +44,8 @@ struct BrightnessMenuContent: View {
 
             quickSetRow(state: state, palette: palette)
 
-            if controller.batteryAdvisoryVisible || controller.thermalAdvisory != nil {
-                advisories(palette: palette)
+            if state.boostBlockedByOtherApp || controller.batteryAdvisoryVisible || controller.thermalAdvisory != nil {
+                advisories(state: state, palette: palette)
             }
 
             Rectangle()
@@ -139,11 +139,18 @@ struct BrightnessMenuContent: View {
         .buttonStyle(.plain)
     }
 
-    /// Both banners are advisory only — they never block or clamp the
-    /// slider, per the spec's Battery/Thermal advisory decisions. Mockups
-    /// 1g/2g.
-    private func advisories(palette: Palette) -> some View {
+    /// The Boost-blocked banner reports a real refusal (see `BoostEngagement`'s
+    /// gamma-capture guard); the battery/thermal banners below it are purely
+    /// informational — neither ever blocks or clamps the slider.
+    private func advisories(state: BrightnessController.State, palette: Palette) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if state.boostBlockedByOtherApp {
+                AdvisoryBanner(
+                    icon: "exclamationmark.triangle.fill",
+                    text: "Another app is already boosting this display.",
+                    palette: palette
+                )
+            }
             if controller.batteryAdvisoryVisible {
                 AdvisoryBanner(
                     icon: "bolt.slash.fill",

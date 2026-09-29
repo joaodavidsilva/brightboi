@@ -8,9 +8,11 @@ import Foundation
 final class FakeDisplayBrightnessProvider: DisplayBrightnessProviding {
     private(set) var appliedPercentages: [Double] = []
     var stubbedSupportsExtendedBrightness = true
+    var stubbedOutcome: BrightnessApplyOutcome = .applied
 
-    func apply(percentage: Double) {
+    func apply(percentage: Double) -> BrightnessApplyOutcome {
         appliedPercentages.append(percentage)
+        return stubbedOutcome
     }
 
     func supportsExtendedBrightness() -> Bool {
@@ -26,17 +28,43 @@ final class FakeAutoBrightnessToggle: AutoBrightnessToggling {
     }
 }
 
+/// A trivial `Error` for stubbing `register()`/`unregister()` failures —
+/// `BrightnessController` only ever reads `localizedDescription` off it.
+struct FakeLoginItemError: Error, LocalizedError {
+    var message: String
+    var errorDescription: String? { message }
+}
+
 final class FakeLoginItemService: LoginItemRegistering {
     private(set) var registerCallCount = 0
     private(set) var unregisterCallCount = 0
+    var stubbedStatus: LoginItemStatus = .notRegistered
+    var stubbedRegisterError: Error?
+    var stubbedUnregisterError: Error?
 
-    func registerForLaunchAtLogin() {
+    var status: LoginItemStatus { stubbedStatus }
+
+    func register() throws {
         registerCallCount += 1
+        if let stubbedRegisterError {
+            throw stubbedRegisterError
+        }
+        stubbedStatus = .enabled
     }
 
-    func unregisterFromLaunchAtLogin() {
+    func unregister() throws {
         unregisterCallCount += 1
+        if let stubbedUnregisterError {
+            throw stubbedUnregisterError
+        }
+        stubbedStatus = .notRegistered
     }
+}
+
+final class FakeBundleLocationProvider: BundleLocationProviding {
+    var bundlePath = "/Applications/BrightBoi.app"
+    var isInApplicationsFolder = true
+    var isTranslocatedOrReadOnly = false
 }
 
 final class FakeBrightnessPersistence: BrightnessPersisting {
@@ -47,6 +75,7 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
     var storedKeyRemapShortcut: KeyRemapShortcut?
     var storedKeyRemapEnabled: Bool?
     var storedHasCompletedOnboarding: Bool?
+    var storedLastRegisteredLoginItemPath: String?
 
     func save(percentage: Double) {
         savedPercentages.append(percentage)
@@ -63,6 +92,14 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
 
     func loadLaunchAtLoginEnabled() -> Bool? {
         storedLaunchAtLoginEnabled
+    }
+
+    func save(lastRegisteredLoginItemPath: String) {
+        storedLastRegisteredLoginItemPath = lastRegisteredLoginItemPath
+    }
+
+    func loadLastRegisteredLoginItemPath() -> String? {
+        storedLastRegisteredLoginItemPath
     }
 
     func save(boostCeiling: Double) {
