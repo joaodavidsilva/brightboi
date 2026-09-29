@@ -21,11 +21,17 @@ final class OnboardingModel {
 
     /// Wired by whatever presents this model (the onboarding window
     /// controller) to dismiss itself once onboarding is done — the model has
-    /// no notion of a window.
+    /// no notion of a window. Not observation-tracked: it's set once by the
+    /// presenter and never read by any SwiftUI view.
+    @ObservationIgnored
     var onFinished: () -> Void = {}
 
     private let persistence: BrightnessPersisting
     private let permissionsChecker: PermissionsChecking
+    /// Internal bookkeeping only, never read by a view — not
+    /// observation-tracked, matching `BrightnessController`'s own
+    /// non-UI-facing properties.
+    @ObservationIgnored
     private var hasFinished = false
 
     init(persistence: BrightnessPersisting, permissionsChecker: PermissionsChecking) {

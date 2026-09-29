@@ -21,6 +21,13 @@ import IOKit.hid
 /// every recognized combo, which is what actually supersedes macOS's native
 /// handling — a listen-only tap would still let the OS apply its own
 /// Nominal-range adjustment underneath BrightBoi's.
+///
+/// `@MainActor`: satisfies `KeyTapControlling`'s isolation, and lets
+/// `deinit` stop the tap synchronously (see below). The tap callback itself
+/// is a plain C function pointer with no isolation the compiler can see —
+/// it always actually runs on the main run loop (the source is added to
+/// `CFRunLoopGetMain()`), so it reaches back in via `MainActor.assumeIsolated`.
+@MainActor
 final class RealKeyTap: KeyTapControlling {
     // `NX_KEYTYPE_BRIGHTNESS_UP`/`NX_KEYTYPE_BRIGHTNESS_DOWN` from
     // `IOKit/hidsystem/ev_keymap.h` — the media-key type codes packed into
@@ -47,6 +54,15 @@ final class RealKeyTap: KeyTapControlling {
     private var runLoopSource: CFRunLoopSource?
     private var remap: KeyRemapShortcut?
     private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
+
+    /// Stops the tap if it's still running when the object goes away —
+    /// belt-and-suspenders alongside `stop()`'s explicit call sites, for
+    /// whichever future refactor releases a `RealKeyTap` without calling it
+    /// first. `isolated` since `stop()` (a `KeyTapControlling` requirement)
+    /// is main-actor-isolated.
+    isolated deinit {
+        stop()
+    }
 
     func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
         self.remap = remap
@@ -88,7 +104,18 @@ final class RealKeyTap: KeyTapControlling {
             callback: { _, type, cgEvent, refcon in
                 guard let refcon else { return Unmanaged.passUnretained(cgEvent) }
                 let keyTap = Unmanaged<RealKeyTap>.fromOpaque(refcon).takeUnretainedValue()
-                return keyTap.handle(type: type, cgEvent: cgEvent)
+                // The callback is a bare C function pointer with no isolation
+                // the compiler can verify, but `installEventTap()` only ever
+                // adds this tap's run-loop source to the main run loop, so
+                // it genuinely always runs there. Assigned through a `var`
+                // rather than returned directly from `assumeIsolated`'s
+                // closure, since its result type must be `Sendable` and
+                // `CGEvent` isn't.
+                var result: Unmanaged<CGEvent>?
+                MainActor.assumeIsolated {
+                    result = keyTap.handle(type: type, cgEvent: cgEvent)
+                }
+                return result
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {

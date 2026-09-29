@@ -216,6 +216,12 @@ private struct PrimaryButton: View {
                 .background(palette.accent, in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
+        // Explicit, rather than relying on whichever control the window
+        // hands initial keyboard focus to by default — verified live that
+        // without this, Return activated the window's own native close
+        // button instead of this one, dismissing onboarding without
+        // completing it.
+        .keyboardShortcut(.defaultAction)
     }
 }
 

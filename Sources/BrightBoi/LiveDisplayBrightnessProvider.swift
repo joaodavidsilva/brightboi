@@ -14,6 +14,9 @@ import CoreGraphics
 /// working, since there is no reliable private "set brightness past 1.0"
 /// symbol on this hardware/OS. Anchored per ADR-0002: factor 1.0 (500 nits,
 /// Nominal ceiling) at 100%, factor 2.0 (1000 nits sustained) at 200%.
+/// `@MainActor`: satisfies `DisplayBrightnessProviding`'s isolation, and its
+/// own `NSScreen` lookups and `BoostEngagement` are main-thread-only anyway.
+@MainActor
 final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
     private typealias SetBrightnessFunc = @convention(c) (CGDirectDisplayID, Float) -> Int32
 

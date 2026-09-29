@@ -1,13 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// The "Buy me a coffee" window (mockup 3a/3b): single CTA, "Not today"/Esc
-/// dismiss. No 1/3/5-coffee preset buttons — dropped per ticket 06, since
-/// Buy Me a Coffee has no URL parameter to pre-fill an amount and the
-/// account has no fixed minimum. Hosted in `DonationWindowController`'s
-/// `NSWindow`; this view only renders content and calls back into
-/// `onDismiss` for both the "Not today" tap and Esc.
+/// The "Buy me a coffee" window: single CTA, "Not today"/Esc dismiss. No
+/// 1/3/5-coffee preset buttons — Buy Me a Coffee has no URL parameter to
+/// pre-fill an amount and the account has no fixed minimum. Hosted in
+/// `DonationWindowController`'s `NSWindow`, which never takes keyboard focus
+/// on its own; this view only renders content, calls back into `onDismiss`
+/// for both the "Not today" tap and Esc, and shows the Esc hint only once
+/// `keyState` says Esc would actually reach the window.
 struct DonationView: View {
+    var keyState: DonationWindowKeyState
     var onDismiss: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -52,9 +54,11 @@ struct DonationView: View {
                         .foregroundStyle(palette.secondaryText)
                         .keyboardShortcut(.cancelAction)
 
-                    Text("or just press ⎋")
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.tertiaryText)
+                    if keyState.isKey {
+                        Text("or just press ⎋")
+                            .font(.system(size: 11))
+                            .foregroundStyle(palette.tertiaryText)
+                    }
                 }
                 .frame(maxWidth: .infinity)
             }

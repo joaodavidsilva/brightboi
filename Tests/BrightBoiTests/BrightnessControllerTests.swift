@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import BrightBoi
 
+@MainActor
 @Suite("BrightnessController")
 struct BrightnessControllerTests {
 
@@ -54,6 +55,7 @@ struct BrightnessControllerTests {
             thermalState: thermalState,
             persistenceDebounceInterval: persistenceDebounceInterval
         )
+        controller.start()
 
         return Fixture(
             controller: controller,
@@ -263,11 +265,11 @@ struct BrightnessControllerTests {
 
     // MARK: onKeyPress notification (HUD hook)
 
-    @Test("onKeyPress fires with the press direction on every handled key press")
+    @Test("onKeyPress fires with the press direction and the state right after it, on every handled key press")
     func onKeyPressFiresWithDirection() {
         let fixture = makeFixture()
         var received: [BrightnessController.KeyPress] = []
-        fixture.controller.onKeyPress = { received.append($0) }
+        fixture.controller.onKeyPress = { press, _ in received.append(press) }
 
         fixture.controller.handleKeyPress(.raise)
         fixture.controller.handleKeyPress(.lower)
@@ -275,12 +277,24 @@ struct BrightnessControllerTests {
         #expect(received == [.raise, .lower])
     }
 
+    @Test("onKeyPress's state argument matches currentState right after the press")
+    func onKeyPressStateMatchesCurrentState() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+        var receivedState: BrightnessController.State?
+        fixture.controller.onKeyPress = { _, state in receivedState = state }
+
+        fixture.controller.handleKeyPress(.raise)
+
+        #expect(receivedState == fixture.controller.currentState)
+    }
+
     @Test("onKeyPress still fires when the press clamps at a boundary and the percentage doesn't change")
     func onKeyPressFiresEvenWhenClampedAtBoundary() {
         let fixture = makeFixture()
         fixture.controller.setPercentage(200)
         var receivedCount = 0
-        fixture.controller.onKeyPress = { _ in receivedCount += 1 }
+        fixture.controller.onKeyPress = { _, _ in receivedCount += 1 }
 
         fixture.controller.handleKeyPress(.raise)
 
@@ -320,14 +334,14 @@ struct BrightnessControllerTests {
         #expect(fixture.persistence.savedPercentages == [30])
     }
 
-    @Test("flushes a pending debounced save immediately when the app is about to terminate")
+    @Test("flushPendingPersist saves immediately — called by AppDelegate.applicationWillTerminate, not a notification observer on the controller itself")
     func flushesPendingPersistOnTermination() {
         let fixture = makeFixture(persistenceDebounceInterval: 30)
 
         fixture.controller.setPercentage(42)
         #expect(fixture.persistence.savedPercentages.isEmpty)
 
-        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: nil)
+        fixture.controller.flushPendingPersist()
 
         // 42 rounds to 40 before it's ever persisted.
         #expect(fixture.persistence.savedPercentages == [40])

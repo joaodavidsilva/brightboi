@@ -1,8 +1,10 @@
 import Foundation
 
-/// Drives the built-in display's actual brightness. Ticket 04/05 supply the
-/// real implementation (private/EDR techniques per `docs/brightness-api-research.md`);
-/// this ticket only defines the seam.
+/// Drives the built-in display's actual brightness. `@MainActor` because the
+/// real implementation touches `NSScreen`/`NSWindow`/Metal, which are only
+/// safe from the main thread — `BrightnessController`, its only caller, is
+/// `@MainActor` itself.
+@MainActor
 protocol DisplayBrightnessProviding {
     func apply(percentage: Double)
 
@@ -76,6 +78,9 @@ protocol BrightnessPersisting {
 /// `remap` live (e.g. the Settings shortcut recorder) without an explicit
 /// `stop` first. `stop` fully releases the tap — the configured keys return
 /// to native macOS handling — used by the "Let BrightBoi own …" toggle.
+/// `@MainActor` because the real implementation drives AppKit/Core Graphics
+/// event-tap state that's only safe to touch from the main thread.
+@MainActor
 protocol KeyTapControlling {
     func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Void)
     func stop()

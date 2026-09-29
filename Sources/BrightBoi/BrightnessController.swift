@@ -10,25 +10,36 @@ import Observation
 ///
 /// `@Observable` so the menu bar UI (slider, live icon) re-renders as
 /// `currentState` changes, without needing a separate published wrapper.
+///
+/// `@MainActor`: every real implementation behind these protocols — AppKit
+/// windows, a `CGEventTap`, Metal — is main-thread-only, and every call site
+/// (SwiftUI, the key tap's callback, `AppDelegate`) already only ever drives
+/// this from the main thread. Isolating the type turns that implicit
+/// invariant into a compile-time guarantee instead of a runtime trap.
+@MainActor
 @Observable
 final class BrightnessController {
     /// Percentage bounds per the spec: 0–100 is Nominal Brightness,
-    /// 100–200 is Extended Brightness / Boost.
-    static let minimumPercentage: Double = 0
-    static let maximumPercentage: Double = 200
-    static let nominalCeilingPercentage: Double = 100
-    static let percentageGranularity: Double = 5
+    /// 100–200 is Extended Brightness / Boost. `nonisolated` because these
+    /// are read from plain data code with no main-thread requirement of its
+    /// own — `RealBrightnessPersistence`'s fresh-install fallback,
+    /// `LiveDisplayBrightnessProvider`'s math, and the popover/Settings/HUD
+    /// views.
+    nonisolated static let minimumPercentage: Double = 0
+    nonisolated static let maximumPercentage: Double = 200
+    nonisolated static let nominalCeilingPercentage: Double = 100
+    nonisolated static let percentageGranularity: Double = 5
 
     /// Absolute threshold on the 0...200 scale, not relative to a lowered
     /// Boost Ceiling — if the ceiling is already below this, the battery
     /// advisory simply never fires. See the spec's Battery advisory decision.
-    static let batteryAdvisoryThresholdPercentage: Double = 170
+    nonisolated static let batteryAdvisoryThresholdPercentage: Double = 170
 
     /// The thermal advisory's heuristic "delivered %" offsets — see
     /// ADR-0005: not a measurement, just how far below the requested
     /// percentage each thermal state is assumed to land.
-    static let thermalSeriousDeliveredOffset: Double = 20
-    static let thermalCriticalDeliveredOffset: Double = 40
+    nonisolated static let thermalSeriousDeliveredOffset: Double = 20
+    nonisolated static let thermalCriticalDeliveredOffset: Double = 40
 
     struct State: Equatable {
         var percentage: Double
@@ -65,12 +76,14 @@ final class BrightnessController {
 
     private(set) var currentState: State
 
-    /// Notified after every recognized key press is applied to `currentState`
-    /// — including a press that clamps at the 0%/200% ends and so leaves the
-    /// percentage unchanged. The HUD (ticket 03) hooks in here rather than
-    /// diffing `currentState`, since it must show/reset its dismiss timer on
-    /// the press itself, not on a percentage value that happens to differ.
-    var onKeyPress: ((KeyPress) -> Void)?
+    /// Notified after every recognized key press is applied — including a
+    /// press that clamps at the 0%/200% ends and so leaves the percentage
+    /// unchanged — with the state as of right after that press. Passing
+    /// `State` through the callback (rather than the caller reading
+    /// `currentState` back off the controller) means whoever wires this up
+    /// doesn't need to capture the controller itself just to read its state.
+    @ObservationIgnored
+    var onKeyPress: ((KeyPress, State) -> Void)?
 
     private let displayBrightness: DisplayBrightnessProviding
     private let autoBrightnessToggle: AutoBrightnessToggling
@@ -86,9 +99,16 @@ final class BrightnessController {
     private var boostCeiling: Double
     private var keyRemapEnabled: Bool
     private var keyRemapShortcut: KeyRemapShortcut
+    private var hasStarted = false
+    @ObservationIgnored
     private var pendingPersistWorkItem: DispatchWorkItem?
-    private var terminationObserver: NSObjectProtocol?
 
+    /// Builds the controller and its initial `currentState` from whatever's
+    /// already persisted — no side effect touches the display, the login
+    /// item list, auto-brightness or the key tap. That happens once in
+    /// `start()`, so constructing the controller early (SwiftUI's
+    /// `MenuBarExtra`/`Settings` scenes need it at `body` time, before the
+    /// app has finished launching) is always safe.
     init(
         displayBrightness: DisplayBrightnessProviding,
         autoBrightnessToggle: AutoBrightnessToggling,
@@ -110,10 +130,9 @@ final class BrightnessController {
         self.keyStepPercentage = keyStepPercentage
         self.persistenceDebounceInterval = persistenceDebounceInterval
 
-        // Session-start-only check, same one-shot pattern as the
-        // Auto-Brightness Takeover call below — Boost availability can't
-        // change mid-session, since it depends on the built-in display's
-        // fixed physical headroom.
+        // Session-start-only check, decided once here and never re-read —
+        // Boost availability can't change mid-session, since it depends on
+        // the built-in display's fixed physical headroom.
         let supportsBoost = displayBrightness.supportsExtendedBrightness()
         self.supportsBoost = supportsBoost
 
@@ -141,32 +160,24 @@ final class BrightnessController {
             keyRemapEnabled: keyRemapEnabled,
             keyRemapShortcut: keyRemapShortcut
         )
-        self.displayBrightness.apply(percentage: restoredPercentage)
-
-        // Session-start-only effects: fired once here, never again per session.
-        self.autoBrightnessToggle.disableAutoBrightness()
-        if launchAtLoginEnabled {
-            self.loginItemService.registerForLaunchAtLogin()
-        }
-        if keyRemapEnabled {
-            self.startKeyTap(remap: keyRemapShortcut)
-        }
-
-        // The debounce window (default 0.3s) would otherwise drop the final
-        // percentage if the user quits right after their last slider/key
-        // move — flush any pending save synchronously before the app exits.
-        self.terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.flushPendingPersist()
-        }
     }
 
-    deinit {
-        if let terminationObserver {
-            NotificationCenter.default.removeObserver(terminationObserver)
+    /// Fires every session-start-only side effect exactly once: applies the
+    /// restored percentage to the real display, disables macOS's native
+    /// auto-brightness, registers the login item, and starts the key tap.
+    /// Called from `AppDelegate.applicationDidFinishLaunching`, once `NSApp`
+    /// has actually finished launching. Calling it again is a no-op.
+    func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
+
+        displayBrightness.apply(percentage: currentState.percentage)
+        autoBrightnessToggle.disableAutoBrightness()
+        if currentState.launchAtLoginEnabled {
+            loginItemService.registerForLaunchAtLogin()
+        }
+        if keyRemapEnabled {
+            startKeyTap(remap: keyRemapShortcut)
         }
     }
 
@@ -180,7 +191,7 @@ final class BrightnessController {
     func handleKeyPress(_ press: KeyPress) {
         let delta = press == .raise ? keyStepPercentage : -keyStepPercentage
         setPercentage(currentState.percentage + delta)
-        onKeyPress?(press)
+        onKeyPress?(press, currentState)
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
@@ -258,6 +269,18 @@ final class BrightnessController {
         }
     }
 
+    /// Flushes any pending debounced save immediately — internal (not
+    /// private) so `AppDelegate.applicationWillTerminate` can call it
+    /// directly. The debounce window (default 0.3s) would otherwise drop the
+    /// final percentage if the user quits right after their last
+    /// slider/key move.
+    func flushPendingPersist() {
+        guard let pendingPersistWorkItem else { return }
+        pendingPersistWorkItem.cancel()
+        persistence.save(percentage: currentState.percentage)
+        self.pendingPersistWorkItem = nil
+    }
+
     private func startKeyTap(remap: KeyRemapShortcut) {
         keyTap.start(remap: remap) { [weak self] press in
             self?.handleKeyPress(press)
@@ -300,13 +323,6 @@ final class BrightnessController {
         DispatchQueue.main.asyncAfter(deadline: .now() + persistenceDebounceInterval, execute: workItem)
     }
 
-    private func flushPendingPersist() {
-        guard let pendingPersistWorkItem else { return }
-        pendingPersistWorkItem.cancel()
-        persistence.save(percentage: currentState.percentage)
-        self.pendingPersistWorkItem = nil
-    }
-
     /// On a non-XDR Mac, Nominal Brightness (0...100) is the entire reachable
     /// range — Boost doesn't exist there, so both the clamp ceiling and the
     /// icon's "full" mark move to 100 rather than staying pinned at 200.
@@ -314,7 +330,9 @@ final class BrightnessController {
     /// 01) need the same rule to compute "Max boi" and the track's fill
     /// fraction, and having three independent copies of this ternary was a
     /// real duplication risk once ticket 02 makes the ceiling configurable.
-    static func effectiveMaximum(supportsBoost: Bool) -> Double {
+    /// `nonisolated`: called from SwiftUI view code that isn't itself
+    /// main-actor-isolated.
+    nonisolated static func effectiveMaximum(supportsBoost: Bool) -> Double {
         supportsBoost ? maximumPercentage : nominalCeilingPercentage
     }
 

@@ -24,6 +24,12 @@ import MetalKit
 /// Reimplemented independently from the technique description in
 /// `docs/brightness-api-research.md` — BrightIntosh (GPLv3) was read for
 /// research only, not copied.
+/// `@MainActor`: `EDROverlayWindow` is main-thread-only (`NSWindow`/`MTKView`),
+/// and `apply(percentage:)` — the only caller of `engage`/`disengage` — is
+/// only ever driven synchronously from the main thread today (the slider
+/// binding, the key tap), mirroring the whole app's implicit single-threaded
+/// UI-driven design.
+@MainActor
 final class BoostEngagement {
     private let displayID: CGDirectDisplayID
     private var baselineGammaTable: GammaTable?
@@ -31,13 +37,6 @@ final class BoostEngagement {
     private var currentFactor: CGGammaValue = 1.0
     private var wakeObserver: NSObjectProtocol?
 
-    /// `EDROverlayWindow` is `@MainActor` (it touches `NSWindow`/`MTKView`).
-    /// `BoostEngagement` itself stays nonisolated rather than propagating
-    /// `@MainActor` up through `DisplayBrightnessProviding` and
-    /// `BrightnessController` — `apply(percentage:)` is only ever driven
-    /// synchronously from the main thread today (the slider binding; the
-    /// future real key tap per ticket 07 will need the same invariant),
-    /// mirroring the whole app's implicit single-threaded UI-driven design.
     init(displayID: CGDirectDisplayID) {
         self.displayID = displayID
         self.wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -45,11 +44,13 @@ final class BoostEngagement {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.reapplyAfterWake()
+            MainActor.assumeIsolated {
+                self?.reapplyAfterWake()
+            }
         }
     }
 
-    deinit {
+    isolated deinit {
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
@@ -61,13 +62,11 @@ final class BoostEngagement {
             baselineGammaTable = GammaTable.capture(displayID: displayID)
         }
         if overlay == nil {
-            overlay = MainActor.assumeIsolated {
-                let overlay = EDROverlayWindow()
-                overlay.mount()
-                return overlay
-            }
+            let overlay = EDROverlayWindow()
+            overlay.mount()
+            self.overlay = overlay
         } else if let overlay {
-            MainActor.assumeIsolated { overlay.engageEDR() }
+            overlay.engageEDR()
         }
         baselineGammaTable?.scaled(by: factor).apply(to: displayID)
     }
@@ -82,7 +81,7 @@ final class BoostEngagement {
         // scope violation, not just belt-and-suspenders.)
         baselineGammaTable.apply(to: displayID)
         if let overlay {
-            MainActor.assumeIsolated { overlay.disengageEDR() }
+            overlay.disengageEDR()
         }
         self.baselineGammaTable = nil
     }

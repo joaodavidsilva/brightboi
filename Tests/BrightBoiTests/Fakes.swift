@@ -4,6 +4,7 @@ import Foundation
 /// Fakes for `BrightnessController`'s system-facing protocols. Used
 /// exclusively in tests — no production code depends on these.
 
+@MainActor
 final class FakeDisplayBrightnessProvider: DisplayBrightnessProviding {
     private(set) var appliedPercentages: [Double] = []
     var stubbedSupportsExtendedBrightness = true
@@ -97,6 +98,7 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
     }
 }
 
+@MainActor
 final class FakeKeyTap: KeyTapControlling {
     private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
