@@ -6,12 +6,13 @@ import Foundation
 /// shortcut recorder produces. Uses the same flat virtual-keycode space
 /// `CGEvent`/`NSEvent` already expose, so no separate keycode-to-string
 /// translation table is needed to persist or compare a combo.
-// Persisted via synthesized `Codable` (see `RealBrightnessPersistence.save(keyRemapShortcut:)`):
-// new stored properties must be `Optional` (or add a hand-written
-// `init(from:)` using `decodeIfPresent`) — a non-optional property with a
-// default value still throws `keyNotFound` on an old record, silently
-// resetting an upgrader's custom shortcut to F1/F2. Never rename or retype
-// an existing property either; both break decoding the same way.
+///
+/// Persisted via synthesized `Codable` (see `RealBrightnessPersistence.save(keyRemapShortcut:)`):
+/// new stored properties must be `Optional` (or add a hand-written
+/// `init(from:)` using `decodeIfPresent`) — a non-optional property with a
+/// default value still throws `keyNotFound` on an old record, silently
+/// resetting an upgrader's custom shortcut to F1/F2. Never rename or retype
+/// an existing property either; both break decoding the same way.
 struct KeyCombo: Equatable, Codable {
     struct Modifiers: OptionSet, Codable {
         // Persisted as this raw `Int` in UserDefaults since v1.0.0 — never
@@ -107,9 +108,9 @@ extension KeyCombo.Modifiers {
 /// pair, matching today's behavior with no migration needed for existing
 /// users.
 ///
-// Persisted via synthesized `Codable`, same frozen-format rule as
-// `KeyCombo` above: new properties must be `Optional`, existing ones must
-// never be renamed or retyped.
+/// Persisted via synthesized `Codable`, same frozen-format rule as
+/// `KeyCombo` above: new properties must be `Optional`, existing ones must
+/// never be renamed or retyped.
 struct KeyRemapShortcut: Equatable, Codable {
     var raise: KeyCombo
     var lower: KeyCombo

@@ -303,3 +303,30 @@ final class FakePermissionsChecker: PermissionsChecking {
         requestInputMonitoringCallCount += 1
     }
 }
+
+/// Stands in for `BrightnessController.PersistScheduler` in tests: captures
+/// the debounced-save closure instead of actually waiting out the delay, so
+/// a test fires it deterministically (`fire()`) rather than sleeping the
+/// test thread and racing the real debounce interval. `schedule` overwrites
+/// the previously captured closure on every call, mirroring the coalescing
+/// behavior of the real scheduler (only the most recent scheduled save ever
+/// runs).
+@MainActor
+final class ManualPersistScheduler {
+    private(set) var lastDelay: TimeInterval?
+    private var pendingWork: (() -> Void)?
+
+    func schedule(_ delay: TimeInterval, _ work: @escaping @Sendable () -> Void) {
+        lastDelay = delay
+        pendingWork = work
+    }
+
+    /// Runs the most recently scheduled closure, as if its delay had just
+    /// elapsed. A no-op if nothing is currently scheduled (already fired, or
+    /// never scheduled).
+    func fire() {
+        let work = pendingWork
+        pendingWork = nil
+        work?()
+    }
+}

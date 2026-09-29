@@ -108,6 +108,14 @@ final class BrightnessController {
         case fallbackDefault
     }
 
+    /// How `schedulePersist` schedules a debounced save — real code fires it
+    /// via `DispatchQueue.main.asyncAfter`, so a physical delay elapses.
+    /// Tests inject a synchronous scheduler that just captures the closure
+    /// for them to fire explicitly, so a debounce can be exercised
+    /// deterministically instead of sleeping the test thread and racing the
+    /// wall clock.
+    typealias PersistScheduler = (TimeInterval, @escaping @Sendable () -> Void) -> Void
+
     /// The thermal-throttle advisory's content — see ADR-0005: `deliveredPercentage`
     /// is a heuristic estimate (`.serious` → requested − 20, `.critical` →
     /// requested − 40, floored at 100%), never a measurement.
@@ -165,8 +173,21 @@ final class BrightnessController {
     private var autoBrightnessTakeoverEnabled: Bool
     private var hasStarted = false
     private var lastLaunchAtLoginError: String?
+    private let schedule: PersistScheduler
+    /// The percentage most recently handed to `schedulePersist`, still
+    /// unsaved — `nil` once it's been saved (by the scheduled fire or by
+    /// `flushPendingPersist`). Read by `flushPendingPersist`; the scheduled
+    /// closure itself never reads it back, only `schedulePersist`'s own
+    /// capture of the value.
     @ObservationIgnored
-    private var pendingPersistWorkItem: DispatchWorkItem?
+    private var pendingPersistPercentage: Double?
+    /// Bumped on every `schedulePersist`/`flushPendingPersist` call so a
+    /// scheduled closure that fires after a later one superseded it (a
+    /// rapid drag scheduled three saves; only the last should ever write)
+    /// or after a flush already saved can tell it's stale and no-op,
+    /// without needing a cancellable token from `schedule` itself.
+    @ObservationIgnored
+    private var persistSaveGeneration = 0
 
     /// Builds the controller and its initial `currentState` from whatever's
     /// already persisted — no side effect touches the display, the login
@@ -187,7 +208,10 @@ final class BrightnessController {
         thermalState: ThermalStateProviding,
         bundleLocation: BundleLocationProviding,
         keyStepPercentage: Double = percentageGranularity,
-        persistenceDebounceInterval: TimeInterval = 0.3
+        persistenceDebounceInterval: TimeInterval = 0.3,
+        schedule: @escaping PersistScheduler = { delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
     ) {
         self.displayBrightness = displayBrightness
         self.autoBrightnessToggle = autoBrightnessToggle
@@ -199,6 +223,7 @@ final class BrightnessController {
         self.bundleLocation = bundleLocation
         self.keyStepPercentage = keyStepPercentage
         self.persistenceDebounceInterval = persistenceDebounceInterval
+        self.schedule = schedule
 
         // Session-start-only check, decided once here and never re-read —
         // Boost availability can't change mid-session, since it depends on
@@ -530,25 +555,32 @@ final class BrightnessController {
     /// final percentage if the user quits right after their last
     /// slider/key move.
     func flushPendingPersist() {
-        guard let pendingPersistWorkItem else { return }
-        pendingPersistWorkItem.cancel()
-        persistence.save(percentage: currentState.percentage)
-        self.pendingPersistWorkItem = nil
+        guard let pendingPersistPercentage else { return }
+        persistence.save(percentage: pendingPersistPercentage)
+        self.pendingPersistPercentage = nil
+        persistSaveGeneration += 1
     }
 
     /// Called from `AppDelegate.applicationWillTerminate`, alongside
     /// `flushPendingPersist()`. Restores whatever this session changed that
     /// would otherwise outlive the app: if Boost is engaged, the scaled
     /// gamma table first (so the light sensor's own ramp on next login
-    /// doesn't land on top of a still-scaled table), then macOS's own
-    /// auto-brightness setting, only if the recorded original had it on.
-    /// Clears the recorded original afterwards so the next launch records a
-    /// fresh one instead of continuing to protect a value that's already
-    /// been restored.
+    /// doesn't land on top of a still-scaled table), unconditionally — Boost
+    /// itself doesn't depend on the takeover setting. The auto-brightness
+    /// restore, though, only applies while the takeover is actually
+    /// enabled: with it off, BrightBoi never touched macOS's own setting
+    /// this session (or the user turned it back off mid-session via the
+    /// Settings toggle, which already restored it there and then), so
+    /// forcing it back here would silently override a change the user made
+    /// on their own — exactly what the toggle being off is supposed to
+    /// prevent. Only restores (and clears the recorded original) when the
+    /// takeover is enabled, and only re-enables auto-brightness if the
+    /// recorded original had it on.
     func restoreSystemStateOnTermination() {
         if currentState.isBoosted {
             displayBrightness.adoptExternalNominal()
         }
+        guard autoBrightnessTakeoverEnabled else { return }
         if persistence.loadAutoBrightnessWasEnabledOriginally() ?? true {
             autoBrightnessToggle.enableAutoBrightness()
         }
@@ -702,14 +734,31 @@ final class BrightnessController {
     }
 
     private func schedulePersist(_ percentage: Double) {
-        pendingPersistWorkItem?.cancel()
-
-        let workItem = DispatchWorkItem { [weak self, persistence = self.persistence] in
-            persistence.save(percentage: percentage)
-            self?.pendingPersistWorkItem = nil
+        pendingPersistPercentage = percentage
+        persistSaveGeneration += 1
+        let generation = persistSaveGeneration
+        // `@Sendable` (see `PersistScheduler`) since it may cross into
+        // `schedule`'s own, non-actor-isolated signature — `assumeIsolated`
+        // is safe here the same way it is in `RealPowerSourceProvider`/
+        // `RealThermalStateProvider`'s C-callback bridges: every real
+        // scheduler (`DispatchQueue.main.asyncAfter`) and every test
+        // scheduler always fires this back on the main thread.
+        schedule(persistenceDebounceInterval) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.firePendingPersist(generation: generation, percentage: percentage)
+            }
         }
-        pendingPersistWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + persistenceDebounceInterval, execute: workItem)
+    }
+
+    /// The scheduled closure `schedulePersist` hands to `schedule`. Only
+    /// fires the save when `generation` still matches the latest call —
+    /// stale otherwise, either because a later `schedulePersist` coalesced
+    /// over it (a rapid drag: only the final value should ever save) or
+    /// because `flushPendingPersist` already saved it early.
+    private func firePendingPersist(generation: Int, percentage: Double) {
+        guard generation == persistSaveGeneration else { return }
+        persistence.save(percentage: percentage)
+        pendingPersistPercentage = nil
     }
 
     /// On a non-XDR Mac, Nominal Brightness (0...100) is the entire reachable

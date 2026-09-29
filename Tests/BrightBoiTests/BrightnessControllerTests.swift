@@ -18,6 +18,7 @@ struct BrightnessControllerTests {
         let thermalState: FakeThermalStateProvider
         let bundleLocation: FakeBundleLocationProvider
         let callLog: CallLog
+        let scheduler: ManualPersistScheduler
     }
 
     private func makeFixture(
@@ -79,6 +80,7 @@ struct BrightnessControllerTests {
         bundleLocation.bundlePath = bundlePath
         bundleLocation.isInApplicationsFolder = isInApplicationsFolder
         bundleLocation.isTranslocatedOrReadOnly = isTranslocatedOrReadOnly
+        let scheduler = ManualPersistScheduler()
 
         let controller = BrightnessController(
             displayBrightness: displayBrightness,
@@ -89,7 +91,8 @@ struct BrightnessControllerTests {
             powerSource: powerSource,
             thermalState: thermalState,
             bundleLocation: bundleLocation,
-            persistenceDebounceInterval: persistenceDebounceInterval
+            persistenceDebounceInterval: persistenceDebounceInterval,
+            schedule: scheduler.schedule
         )
         if startController {
             controller.start()
@@ -105,7 +108,8 @@ struct BrightnessControllerTests {
             powerSource: powerSource,
             thermalState: thermalState,
             bundleLocation: bundleLocation,
-            callLog: callLog
+            callLog: callLog,
+            scheduler: scheduler
         )
     }
 
@@ -321,6 +325,17 @@ struct BrightnessControllerTests {
         #expect(disabledFixture.autoBrightnessToggle.enableCallCount == 0)
     }
 
+    @Test("restoring on termination leaves macOS auto-brightness alone when the takeover is off")
+    func restoreOnTerminationSkipsWhenTakeoverDisabled() {
+        let fixture = makeFixture(storedAutoBrightnessWasEnabledOriginally: true, storedAutoBrightnessTakeoverEnabled: false)
+        fixture.controller.restoreSystemStateOnTermination()
+        #expect(fixture.autoBrightnessToggle.enableCallCount == 0)
+        // The marker survives too — with the takeover off, this session
+        // never disabled auto-brightness, so there's nothing to restore and
+        // nothing to stop protecting.
+        #expect(fixture.persistence.storedAutoBrightnessWasEnabledOriginally == true)
+    }
+
     @Test("restoring on termination clears the recorded original so the next launch records a fresh one")
     func restoringOnTerminationClearsRecordedOriginal() {
         let fixture = makeFixture(storedAutoBrightnessWasEnabledOriginally: true)
@@ -459,10 +474,10 @@ struct BrightnessControllerTests {
     }
 
     @Test("exactly one save happens after the debounce, even if quitting flushes right after")
-    func exactlyOneSaveAfterDebounceThenTermination() async throws {
-        let fixture = makeFixture(persistenceDebounceInterval: 0.05)
+    func exactlyOneSaveAfterDebounceThenTermination() {
+        let fixture = makeFixture()
         fixture.controller.setPercentage(60)
-        try await Task.sleep(for: .milliseconds(150))
+        fixture.scheduler.fire()
         #expect(fixture.persistence.savedPercentages == [60])
 
         fixture.controller.flushPendingPersist()
@@ -616,8 +631,8 @@ struct BrightnessControllerTests {
     }
 
     @Test("debounces persistence: rapid changes coalesce into a single save of the final value")
-    func persistenceIsDebounced() async throws {
-        let fixture = makeFixture(persistenceDebounceInterval: 0.05)
+    func persistenceIsDebounced() {
+        let fixture = makeFixture()
 
         fixture.controller.setPercentage(10)
         fixture.controller.setPercentage(20)
@@ -625,7 +640,11 @@ struct BrightnessControllerTests {
 
         #expect(fixture.persistence.savedPercentages.isEmpty)
 
-        try await Task.sleep(for: .milliseconds(250))
+        // Only the last of the three scheduled saves is still pending — the
+        // manual scheduler overwrites its captured closure on every
+        // `schedulePersist` call, same as the real one coalescing three
+        // `DispatchQueue.main.asyncAfter` calls down to one live timer.
+        fixture.scheduler.fire()
 
         #expect(fixture.persistence.savedPercentages == [30])
     }
