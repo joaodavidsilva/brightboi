@@ -12,13 +12,6 @@ Packaging/release-notes-snippet.md to its section.
 
 ## [Unreleased]
 
-### Fixed
-
-- VoiceOver, Voice Control and other assistive tools can open the menu bar popover. The menu bar
-  item is now a standard status item that responds to a press, and the popover closes on a click
-  outside it and on Esc. The item is announced as "BrightBoi, brightness N percent", with
-  ", boosted" once past 100%.
-
 ## [1.2.0] - 2026-09-30
 
 ### Added
@@ -44,6 +37,9 @@ Packaging/release-notes-snippet.md to its section.
 
 ### Changed
 
+- On macOS 26 and later the brightness key meter is a glass capsule under the menu bar; earlier
+  macOS versions keep the bezel.
+- Settings opens in its own window, from the popover and from opening BrightBoi a second time.
 - The brightness key meter shows on the built-in display wherever keyboard focus is, with a
   percentage readout, a spoken level for VoiceOver, and a fade that respects Reduce Motion.
 - BrightBoi now starts at the display's current brightness instead of overwriting it, and
@@ -65,6 +61,10 @@ Packaging/release-notes-snippet.md to its section.
 
 ### Fixed
 
+- VoiceOver, Voice Control and other assistive tools can open the menu bar popover. The menu bar
+  item is now a standard status item that responds to a press, and the popover closes on a click
+  outside it and on Esc. The item is announced as "BrightBoi, brightness N percent", with
+  ", boosted" once past 100%.
 - Granting Accessibility while BrightBoi is running now takes over the brightness keys without a
   relaunch.
 - BrightBoi no longer swallows keys that are not brightness keys, and brightness keys pressed
