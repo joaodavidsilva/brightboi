@@ -175,28 +175,154 @@ final class SystemStatusItem: StatusItemHosting {
     }
 }
 
-/// An `NSPopover` that closes on a click outside it and on Esc, hosting the
-/// popover content.
+/// Installs event monitors; the real one talks to `NSEvent`, a test counts.
+@MainActor
+protocol EventMonitoring: AnyObject {
+    func addLocal(matching mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> NSEvent?) -> Any?
+    func addGlobal(matching mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> Void) -> Any?
+    func remove(_ token: Any)
+}
+
+/// The real monitors, backed by `NSEvent`.
+@MainActor
+final class SystemEventMonitors: EventMonitoring {
+    func addLocal(matching mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> NSEvent?) -> Any? {
+        NSEvent.addLocalMonitorForEvents(matching: mask) { event in
+            // Local monitors run on the main thread; the event only passes through.
+            nonisolated(unsafe) var result: NSEvent?
+            MainActor.assumeIsolated { result = handler(event) }
+            return result
+        }
+    }
+
+    func addGlobal(matching mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> Void) -> Any? {
+        NSEvent.addGlobalMonitorForEvents(matching: mask) { event in
+            MainActor.assumeIsolated { handler(event) }
+        }
+    }
+
+    func remove(_ token: Any) {
+        NSEvent.removeMonitor(token)
+    }
+}
+
+/// Decides when an open popover should close, without relying on the app
+/// being active. A transient popover closes whenever the app resigns, and an
+/// accessory app opened by an assistive client (AXPress) is handed back
+/// activation at once, so the popover would vanish the moment it appeared.
+/// Instead the popover stays open until something explicit closes it: a mouse
+/// down outside it and outside the status button, Esc, the screen
+/// configuration changing, or the app quitting.
+///
+/// Monitors and observers exist only between `start()` and `stop()`.
+@MainActor
+final class PopoverDismissal {
+    private let monitors: EventMonitoring
+    private let notifications: NotificationCenter
+    private let insideFrames: () -> [NSRect]
+    private let popoverWindow: () -> NSWindow?
+    private let close: () -> Void
+
+    private var tokens: [Any] = []
+    private var observers: [NSObjectProtocol] = []
+
+    static let mouseDowns: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+    static let escapeKeyCode: UInt16 = 53
+
+    /// - Parameters:
+    ///   - insideFrames: screen frames where a mouse down does not dismiss
+    ///     (the popover and the status button).
+    ///   - popoverWindow: the popover's window, which Esc is read in.
+    init(
+        monitors: EventMonitoring = SystemEventMonitors(),
+        notifications: NotificationCenter = .default,
+        insideFrames: @escaping () -> [NSRect],
+        popoverWindow: @escaping () -> NSWindow?,
+        close: @escaping () -> Void
+    ) {
+        self.monitors = monitors
+        self.notifications = notifications
+        self.insideFrames = insideFrames
+        self.popoverWindow = popoverWindow
+        self.close = close
+    }
+
+    var isActive: Bool { !tokens.isEmpty || !observers.isEmpty }
+
+    func start() {
+        guard !isActive else { return }
+        if let token = monitors.addLocal(matching: Self.mouseDowns, handler: { [weak self] event in
+            self?.mouseDown(event)
+            return event
+        }) { tokens.append(token) }
+        if let token = monitors.addGlobal(matching: Self.mouseDowns, handler: { [weak self] event in
+            self?.mouseDown(event)
+        }) { tokens.append(token) }
+        if let token = monitors.addLocal(matching: .keyDown, handler: { [weak self] event in
+            guard let self else { return event }
+            return self.keyDown(event)
+        }) { tokens.append(token) }
+        for name in [NSApplication.didChangeScreenParametersNotification, NSApplication.willTerminateNotification] {
+            observers.append(notifications.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.close() }
+            })
+        }
+    }
+
+    func stop() {
+        for token in tokens { monitors.remove(token) }
+        tokens = []
+        for observer in observers { notifications.removeObserver(observer) }
+        observers = []
+    }
+
+    private func mouseDown(_ event: NSEvent) {
+        let point = event.window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
+        if insideFrames().contains(where: { $0.contains(point) }) { return }
+        close()
+    }
+
+    private func keyDown(_ event: NSEvent) -> NSEvent? {
+        guard event.keyCode == Self.escapeKeyCode,
+              event.window == nil || event.window === popoverWindow() else { return event }
+        close()
+        return nil
+    }
+}
+
+/// An `NSPopover` hosting the popover content. It is `.applicationDefined`,
+/// so it does not close when the app resigns; `PopoverDismissal` closes it.
 @MainActor
 final class SystemPopover: NSObject, PopoverHosting, NSPopoverDelegate {
     let popover = NSPopover()
     var willShow: (() -> Void)?
     var willClose: (() -> Void)?
+    private var dismissal: PopoverDismissal?
+    private weak var anchor: NSButton?
 
-    init(content: NSViewController) {
+    init(content: NSViewController, monitors: EventMonitoring = SystemEventMonitors()) {
         super.init()
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined
         popover.animates = true
         popover.contentViewController = content
         popover.delegate = self
+        dismissal = PopoverDismissal(
+            monitors: monitors,
+            insideFrames: { [weak self] in self?.insideFrames() ?? [] },
+            popoverWindow: { [weak self] in self?.popover.contentViewController?.view.window },
+            close: { [weak self] in self?.close() }
+        )
     }
 
     var isShown: Bool { popover.isShown }
 
     func show(relativeTo button: NSButton) {
+        anchor = button
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        // An accessory app is not active when its item is pressed; without
-        // this the popover is not key and ignores Esc and its shortcuts.
+        // A real click activates the app, which is harmless; an assistive
+        // client's press may not be granted activation, and the popover does
+        // not depend on it. Either way the popover takes key focus itself, so
+        // Esc and keyboard navigation work.
         NSApp.activate(ignoringOtherApps: true)
         popover.contentViewController?.view.window?.makeKey()
     }
@@ -205,11 +331,24 @@ final class SystemPopover: NSObject, PopoverHosting, NSPopoverDelegate {
         popover.close()
     }
 
+    /// Where a mouse down is not a dismissal: the popover and the button that
+    /// toggles it, whose own action handles the click.
+    private func insideFrames() -> [NSRect] {
+        var frames: [NSRect] = []
+        if let window = popover.contentViewController?.view.window { frames.append(window.frame) }
+        if let button = anchor, let window = button.window {
+            frames.append(window.convertToScreen(button.convert(button.bounds, to: nil)))
+        }
+        return frames
+    }
+
     func popoverWillShow(_ notification: Notification) {
         willShow?()
+        dismissal?.start()
     }
 
     func popoverWillClose(_ notification: Notification) {
+        dismissal?.stop()
         willClose?()
     }
 }

@@ -270,23 +270,183 @@ struct MenuBarItemControllerTests {
 @MainActor
 @Suite("System popover")
 struct SystemPopoverTests {
-    @Test("it is transient, so a click outside and Esc close it, and hosts the content")
+    @Test("it does not close with the app, since dismissal is explicit, and hosts the content")
     func configuration() {
         let content = NSViewController()
-        let popover = SystemPopover(content: content)
-        #expect(popover.popover.behavior == .transient)
+        let popover = SystemPopover(content: content, monitors: FakeMonitors())
+        #expect(popover.popover.behavior == .applicationDefined)
         #expect(popover.popover.contentViewController === content)
         #expect(!popover.isShown)
     }
 
     @Test("the popover's delegate reports the start of closing and is asked before showing")
     func delegateForwards() {
-        let popover = SystemPopover(content: NSViewController())
+        let popover = SystemPopover(content: NSViewController(), monitors: FakeMonitors())
         var events: [String] = []
         popover.willShow = { events.append("will show") }
         popover.willClose = { events.append("will close") }
         popover.popoverWillShow(Notification(name: NSPopover.willShowNotification))
         popover.popoverWillClose(Notification(name: NSPopover.willCloseNotification))
         #expect(events == ["will show", "will close"])
+    }
+}
+
+extension SystemPopoverTests {
+    @Test("showing installs the dismissal monitors and closing removes them, cycle after cycle")
+    func monitorsFollowShowAndClose() {
+        let monitors = FakeMonitors()
+        let popover = SystemPopover(content: NSViewController(), monitors: monitors)
+        for cycle in 1...2 {
+            popover.popoverWillShow(Notification(name: NSPopover.willShowNotification))
+            #expect(monitors.live == 3)
+            #expect(monitors.installed == 3 * cycle)
+            popover.popoverWillClose(Notification(name: NSPopover.willCloseNotification))
+            #expect(monitors.live == 0)
+            #expect(monitors.removed == 3 * cycle)
+        }
+    }
+}
+
+/// Counts monitors instead of installing them, and lets a test deliver events.
+@MainActor
+final class FakeMonitors: EventMonitoring {
+    private(set) var installed = 0
+    private(set) var removed = 0
+    private var locals: [(id: Int, mask: NSEvent.EventTypeMask, handler: (NSEvent) -> NSEvent?)] = []
+    private var globals: [(id: Int, mask: NSEvent.EventTypeMask, handler: (NSEvent) -> Void)] = []
+    private var nextID = 0
+
+    var live: Int { locals.count + globals.count }
+
+    func addLocal(matching mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> NSEvent?) -> Any? {
+        installed += 1; nextID += 1
+        locals.append((nextID, mask, handler))
+        return nextID
+    }
+
+    func addGlobal(matching mask: NSEvent.EventTypeMask, handler: @escaping (NSEvent) -> Void) -> Any? {
+        installed += 1; nextID += 1
+        globals.append((nextID, mask, handler))
+        return nextID
+    }
+
+    func remove(_ token: Any) {
+        guard let id = token as? Int else { return }
+        removed += 1
+        locals.removeAll { $0.id == id }
+        globals.removeAll { $0.id == id }
+    }
+
+    /// A mouse down at a screen point, seen by the local and the global monitors.
+    func mouseDown(at point: NSPoint, type: NSEvent.EventType = .leftMouseDown) {
+        let event = NSEvent.mouseEvent(
+            with: type, location: point, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        )!
+        let mask = NSEvent.EventTypeMask(rawValue: 1 << type.rawValue)
+        for local in locals where local.mask.contains(mask) { _ = local.handler(event) }
+        for global in globals where global.mask.contains(mask) { global.handler(event) }
+    }
+
+    /// A key press; returns whether the local monitors let it through.
+    @discardableResult
+    func keyDown(code: UInt16) -> Bool {
+        let event = NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "",
+            isARepeat: false, keyCode: code
+        )!
+        var passed = true
+        for local in locals where local.mask.contains(.keyDown) {
+            if local.handler(event) == nil { passed = false }
+        }
+        return passed
+    }
+}
+
+@MainActor
+@Suite("Popover dismissal")
+struct PopoverDismissalTests {
+    let popoverFrame = NSRect(x: 100, y: 100, width: 300, height: 300)
+    let buttonFrame = NSRect(x: 500, y: 900, width: 30, height: 24)
+
+    private func make() -> (PopoverDismissal, FakeMonitors, NotificationCenter, Counter) {
+        let monitors = FakeMonitors()
+        let center = NotificationCenter()
+        let closes = Counter()
+        let frames = [popoverFrame, buttonFrame]
+        let dismissal = PopoverDismissal(
+            monitors: monitors, notifications: center,
+            insideFrames: { frames }, popoverWindow: { nil },
+            close: { closes.count += 1 }
+        )
+        return (dismissal, monitors, center, closes)
+    }
+
+    final class Counter { var count = 0 }
+
+    @Test("monitors are installed on start and removed once on stop, and none are left")
+    func installAndRemove() {
+        let (dismissal, monitors, _, _) = make()
+        #expect(monitors.live == 0)
+        dismissal.start()
+        dismissal.start()
+        #expect(monitors.installed == 3)
+        #expect(monitors.live == 3)
+        dismissal.stop()
+        dismissal.stop()
+        #expect(monitors.removed == 3)
+        #expect(monitors.live == 0)
+        #expect(!dismissal.isActive)
+    }
+
+    @Test("a mouse down outside closes it, for left, right and other buttons")
+    func outsideMouseDownCloses() {
+        let (dismissal, monitors, _, closes) = make()
+        dismissal.start()
+        monitors.mouseDown(at: NSPoint(x: 10, y: 10))
+        monitors.mouseDown(at: NSPoint(x: 10, y: 10), type: .rightMouseDown)
+        monitors.mouseDown(at: NSPoint(x: 10, y: 10), type: .otherMouseDown)
+        // Local and global monitors both see a click in this fake.
+        #expect(closes.count == 6)
+    }
+
+    @Test("a mouse down inside the popover or on the status button does not close it")
+    func insideMouseDownStaysOpen() {
+        let (dismissal, monitors, _, closes) = make()
+        dismissal.start()
+        monitors.mouseDown(at: NSPoint(x: 200, y: 200))
+        monitors.mouseDown(at: NSPoint(x: 510, y: 910))
+        #expect(closes.count == 0)
+    }
+
+    @Test("Esc closes it and is consumed; other keys pass through")
+    func escape() {
+        let (dismissal, monitors, _, closes) = make()
+        dismissal.start()
+        #expect(monitors.keyDown(code: 0))
+        #expect(closes.count == 0)
+        #expect(!monitors.keyDown(code: 53))
+        #expect(closes.count == 1)
+    }
+
+    @Test("a change of screen configuration or the app terminating closes it")
+    func screensAndTermination() {
+        let (dismissal, _, center, closes) = make()
+        dismissal.start()
+        center.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        center.post(name: NSApplication.willTerminateNotification, object: nil)
+        #expect(closes.count == 2)
+        dismissal.stop()
+        center.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        #expect(closes.count == 2)
+    }
+
+    @Test("the app resigning or deactivating does not close it")
+    func resignDoesNotClose() {
+        let (dismissal, _, center, closes) = make()
+        dismissal.start()
+        center.post(name: NSApplication.didResignActiveNotification, object: nil)
+        #expect(closes.count == 0)
     }
 }
