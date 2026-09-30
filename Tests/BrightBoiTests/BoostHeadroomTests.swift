@@ -152,7 +152,7 @@ struct BoostHeadroomTests {
     @Test("engaging with no built-in display does nothing and reports it")
     func engageWithoutDisplayReportsUnavailable() {
         let engagement = BoostEngagement(displayID: nil)
-        #expect(engagement.engage(factor: 1.5) == .displayUnavailable)
+        #expect(engagement.engage(boostFraction: 0.5) == .displayUnavailable)
         #expect(engagement.isEngaged == false)
     }
 

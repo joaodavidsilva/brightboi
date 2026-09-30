@@ -169,26 +169,119 @@ looks over- or under-driven.
 | 100% (exact boundary) | Boost technique disengaged | no EDR overlay / gamma table left at identity |
 | 100–200% | Boost (EDR trigger + gamma) | overlay window mounted; `factor = 1.0 + (pct - 100) / 100.0`, clamped `[1.0, 2.0]` |
 
-- Anchor at 100% = factor `1.0` (500 nits, Nominal ceiling, matches
-  CONTEXT.md and the empirical 500-nit reading).
-- Anchor at 200% = factor `2.0`, deliberately **half** of the observed
-  `~3.2` max EDR headroom on this panel — this is what keeps the Boost
-  Ceiling at 1000 nits sustained per
-  [ADR-0002](adr/0002-boost-ceiling-sustained-not-peak.md), leaving real
-  margin below the 1600-nit peak headroom rather than running the gamma
-  table right up against it.
-- The `100–200%` factor curve is presented linear-in-factor as a starting
-  point; it is **not** independently nits-verified (see caveat above), so
+- Anchor at 100% = factor `1.0` (the Nominal ceiling; 500 nits on the M1 Pro
+  and M1 Max panels this was measured on, matching the empirical 500-nit
+  reading). Other XDR panels have a different SDR white (Apple rates later
+  generations at 600 nits), so 500 nits is a figure for this panel, not for
+  every XDR panel.
+- Anchor at 200% = a luminance ratio of `2.0` on this panel, which is
+  62.5% of the observed `~3.2` peak-to-Nominal headroom (not half of it:
+  half would be 1.6). This keeps the ceiling at the panel's 1000-nit
+  sustained rating rather than running the gamma table up against the
+  1600-nit peak. The rule is per panel: the ceiling ratio is
+  `min(2.0, 0.625 × H)`, where `H` is the largest *unthrottled* EDR headroom
+  seen at Nominal 100% (1000 nits divided by the panel's own SDR white). It
+  is 2.0 where `H` is about 3.2 and about 1.67 on a 600-nit panel
+  (`H` of about 2.67). BrightBoi learns `H` while Boost runs, counting a
+  reading only once it has held steady (the headroom passes through larger
+  values while the backlight ramps and smaller ones when throttled), and
+  stores it per display, so the ceiling is right from the next launch on.
+  Until it is known the full 2.0 applies, and the live clamp to the granted
+  headroom prevents clipping.
+- The `100–200%` curve is linear in the luminance ratio as a starting
+  point (`BoostCurve.linear`; a geometric, equal-ratio alternative exists and
+  is switched by changing `BoostCurve.active`); it is **not** independently nits-verified (see caveat above), so
   treat it as a reasoned default, not a measured curve. If a manual check
   during ticket 04/05 shows it feels non-linear (perceptually or in battery
   draw), an eased curve can replace the linear one without changing the
   anchors.
 - The EDR overlay window needs to be mounted whenever `percentage > 100` and
-  stay mounted (BrightIntosh's `GammaTechnique.swift` handles sleep/wake,
-  space changes, and periodic gamma-table-drift detection/reapplication —
-  this is nontrivial recurring-maintenance logic, not a one-shot call, and
-  ticket 04/05 should budget for it as part of `DisplayBrightnessProviding`,
-  not treat it as a simple wrapper over a single symbol).
+  stay mounted. Keeping Boost alive is recurring maintenance, not a one-shot
+  call; see [Keeping Boost alive](#keeping-boost-alive).
+
+## Keeping Boost alive
+
+Boost is undone by events that replace the display's table or cover the
+overlay. `BoostEngagement` handles them as follows.
+
+**Events that reset or replace the table.** Display-only sleep and wake
+(`NSWorkspace.screensDidWakeNotification`; a display-only wake does not post
+`didWakeNotification`), system wake, a display reconfiguration
+(`CGDisplayRegisterReconfigurationCallback`, completed notifications only),
+a session becoming active again, a change of the display's ColorSync profile
+(the distributed notifications `com.apple.ColorSync.DeviceProfilesNotification`
+and `com.apple.ColorSync.DisplayProfileNotification`, the values of the
+exported `kColorSyncDeviceProfilesNotification` and
+`kColorSyncDisplayDeviceProfilesNotification`), and another process writing
+the table. Each re-validates at once and again after 0.5 s and 2 s. The live
+table is compared with what was last written: still ours, keep the baseline;
+a plain table, adopt it as the new baseline (so a changed profile survives a
+later disengage); anything else (samples at the top of the range, a
+non-monotonic curve), leave it alone. A read-back never reports a sample above
+1.0, so a boosted table is recognised by a plateau at the top rather than by
+a peak, and nothing is ever compared by exact equality. The ColorSync
+notification names are confirmed as exported constants on macOS 27; that they
+are posted on an actual profile change has not been observed.
+
+**Events that cover the overlay.** WindowServer takes the EDR headroom back
+about 15 s after something opaque covers the overlay's pixel: the screen saver,
+the lock screen (loginwindow's shield windows), another user's session, and
+apps that capture the display (`CGShieldingWindowLevel` is far above the
+overlay's `.screenSaver` level). The overlay must not be raised above
+`.screenSaver`, which would keep the panel in EDR behind the screen saver.
+Instead Boost is *suspended* for the duration: the unscaled baseline is written
+and EDR released, and Boost resumes only when no reason remains (so the screen
+saver ending while the screen is still locked does not resume). The signals
+are the distributed notifications `com.apple.screensaver.didstart`/`didstop`
+and `com.apple.screenIsLocked`/`screenIsUnlocked`, and
+`NSWorkspace.sessionDidResignActive`/`BecomeActive`. A missed notification is
+repaired by reading the session back (`CGSessionCopyCurrentDictionary`'s lock
+and console keys, and whether `com.apple.ScreenSaver.Engine` is running) on
+each re-validation and each engagement. As a fallback, an overlay whose
+occlusion state loses `.visible` is ordered to the front once, and Boost is
+suspended if it is still covered 0.5 s later. Headroom that stays below 1.05
+for 2.5 s with Boost wanted gets the overlay asked for EDR again, at most every
+5 s. While the factor follows the granted headroom (polled every 0.25 s), a
+resumed Boost never clips: it comes back as the headroom returns.
+
+A closed lid (the built-in display online but not active) is a suspension
+reason too, and nothing is written to the dark panel.
+
+**Invert Colors.** On Apple silicon the transfer table is reported to be
+applied before the system's invert stage, so scaling the table with Invert on
+would darken the image instead of brightening it. The ordering has not been
+confirmed on macOS 27 hardware; to be safe Boost is paused while
+`accessibilityDisplayShouldInvertColors` is true and the display stays at
+Nominal 100%. Color Filters have no public signal.
+
+**HDR.** Boost writes a display-wide table, so HDR highlights are expected to
+collapse to about the boosted SDR white while it is on (reports from other apps
+using the technique). This is disclosed in the popover and README. Whether a
+table BrightBoi has written once keeps HDR clipped after returning to 100% is
+unchecked; if it does, `disengage()` should call
+`CGDisplayRestoreColorSyncSettings()` when the built-in is the only active
+display.
+
+## Calibrating the Boost factor
+
+Two questions need eyes, not a photometer, because no luminance readback
+exists once EDR is engaged.
+
+1. **Does the table scale linear light or the encoded signal?** `GammaDomain`
+   assumes linear. Run `swift Tools/gamma-domain-calibration.swift` with
+   Nominal brightness at 100%, Night Shift and True Tone off. It covers the
+   built-in display with a 0-255 step wedge and engages EDR; raise the factor
+   with the arrow keys until the brightest steps merge, keeping each trial to a
+   few seconds (the tool drops back to 1.0 after 6 s and restores the table on
+   every exit). Merging near the headroom (about 3.2) means linear light;
+   merging near 1.70 (the headroom to the power 1/2.2) means gamma-encoded. To
+   apply the result, set `GammaDomain.assumed` to `.encoded(gamma: 2.2)`; the
+   factor mapping and the headroom clamp both follow.
+2. **Does 200% clip?** At 200% (factor 2.0 on an M1-class panel) the wedge must
+   show no merged top steps.
+
+Record the result here with the macOS build. Not yet measured.
+
 
 ## Auto-Brightness Takeover (ticket 06): `CoreBrightness.framework`'s `CBALC*`
 
@@ -285,12 +378,10 @@ this ticket's.
   Ticket 04/05's implementation must be an independent reimplementation of
   the technique described above, not a port of their code.
 - No photometer was available to verify absolute nits for the Boost range;
-  only the two anchor points (100% = 500 nits via the independently-verified
-  Nominal register, 200% = 1000 nits via the deliberate half-headroom
-  choice) are grounded. Recommend a manual visual check before ticket 04/05
-  ships.
+  only the Nominal anchor (100% = 500 nits on this panel, via the
+  independently-verified Nominal register) is grounded. The 200% anchor rests
+  on the linear-table assumption until the step-wedge check in
+  [Calibrating the Boost factor](#calibrating-the-boost-factor) is done.
 - The EDR overlay must persist for the entire time the user is boosted, and
-  needs sleep/wake and drift-recovery handling (see BrightIntosh's
-  `GammaTechnique.swift` for the shape of that problem) — this is a bigger
-  implementation surface for `DisplayBrightnessProviding` than a single
-  private setter call would have been.
+  needs wake, reconfiguration and cover handling; see
+  [Keeping Boost alive](#keeping-boost-alive).

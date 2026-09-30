@@ -22,11 +22,16 @@ enum BuiltInDisplay {
         return builtInID(among: Array(displays.prefix(Int(count))), isBuiltIn: { CGDisplayIsBuiltin($0) != 0 })
     }
 
-    /// Whether `displayID` can be drawn on and driven right now. A built-in
-    /// panel can stay online while its lid is closed, but is then not active,
-    /// and brightness control for it is meaningless.
+    /// Whether `displayID` is a built-in panel that can be drawn on and
+    /// driven right now. A built-in panel can stay online while its lid is
+    /// closed, but is then not active, and brightness control for it is
+    /// meaningless. The built-in check matters because the id is cached: a
+    /// stale id must never pass as an external monitor that happens to be
+    /// active. Display sleep is deliberately not checked: it is not a
+    /// reconfiguration, and a brightness-key press is often what wakes an idle
+    /// panel.
     static func isActive(_ displayID: CGDirectDisplayID) -> Bool {
-        CGDisplayIsActive(displayID) != 0
+        CGDisplayIsBuiltin(displayID) != 0 && CGDisplayIsOnline(displayID) != 0 && CGDisplayIsActive(displayID) != 0
     }
 
     /// The first display `isBuiltIn` accepts, if any.
@@ -78,14 +83,16 @@ enum BoostHeadroom {
     }
 
     /// The gamma factor to actually write: `requested`, but never more than
-    /// the EDR headroom the display currently grants. Scaling past the
+    /// the EDR headroom the display currently grants (in table-factor terms,
+    /// so a gamma-encoded table is clamped to the headroom's matching root). Scaling past the
     /// headroom clips every highlight to white instead of making the screen
     /// brighter, so while the headroom is still ramping up (or has been
     /// throttled) Boost delivers less rather than clipping. Never below 1.0,
     /// which is the identity table.
-    static func effectiveFactor(requested: CGFloat, headroom: CGFloat) -> CGFloat {
+    static func effectiveFactor(requested: CGFloat, headroom: CGFloat, domain: GammaDomain = .assumed) -> CGFloat {
         guard requested.isFinite, headroom.isFinite else { return 1 }
-        return max(1, min(requested, headroom))
+        let headroomFactor = CGFloat(domain.tableFactor(forLuminanceRatio: Double(headroom)))
+        return max(1, min(requested, headroomFactor))
     }
 
     /// Whether a new effective factor differs enough from the one already

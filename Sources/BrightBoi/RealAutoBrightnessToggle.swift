@@ -1,12 +1,12 @@
 import Foundation
 
-/// Real `AutoBrightnessToggling`, built from ticket 06's spike
-/// (`docs/brightness-api-research.md`): `CoreBrightness.framework`'s
+/// Real `AutoBrightnessToggling`, built from the research in
+/// `docs/brightness-api-research.md`: `CoreBrightness.framework`'s
 /// `CBALCSetDisplayAutoBrightnessEnabled` writes the exact preference
 /// (`com.apple.CoreBrightness`'s `"Automatic Display Enabled"`) that macOS's
 /// own "Automatically adjust brightness" checkbox reads and writes, and the
-/// live `corebrightnessd` daemon confirmed processing the call (not just an
-/// inert local write) — see the spike's `log show` evidence.
+/// live `corebrightnessd` daemon was seen processing the call (not just an
+/// inert local write).
 final class RealAutoBrightnessToggle: AutoBrightnessToggling {
     private typealias SetDisplayAutoBrightnessFunc = @convention(c) (Bool) -> Void
 
@@ -47,19 +47,20 @@ final class RealAutoBrightnessToggle: AutoBrightnessToggling {
         return number.boolValue
     }
 
-    /// `CoreBrightness.framework` is private and undocumented (see
-    /// ADR-0001) — if it can't be loaded, this becomes a silent no-op
-    /// rather than crashing the menu bar app.
+    /// `CoreBrightness.framework` is private and undocumented — if it can't
+    /// be loaded, the failure is logged and the toggle does nothing rather
+    /// than crashing the menu bar app; `isAutoBrightnessEnabled()` then
+    /// reports `nil`, which the controller surfaces as unavailable.
     private static func loadSetDisplayAutoBrightnessSymbol() -> SetDisplayAutoBrightnessFunc? {
         guard let handle = dlopen(
             "/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness",
             RTLD_NOW
         ) else {
-            FileHandle.standardError.write(Data("BrightBoi: could not dlopen CoreBrightness.framework\n".utf8))
+            Log.autoBrightness.error("Could not load CoreBrightness.framework")
             return nil
         }
         guard let symbol = dlsym(handle, "CBALCSetDisplayAutoBrightnessEnabled") else {
-            FileHandle.standardError.write(Data("BrightBoi: could not dlsym CBALCSetDisplayAutoBrightnessEnabled\n".utf8))
+            Log.autoBrightness.error("Could not find CBALCSetDisplayAutoBrightnessEnabled in CoreBrightness.framework")
             return nil
         }
         return unsafeBitCast(symbol, to: SetDisplayAutoBrightnessFunc.self)

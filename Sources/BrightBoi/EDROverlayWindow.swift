@@ -25,7 +25,7 @@ import MetalKit
 /// overlay is either fully mounted or `mount(on:)` returns `nil` and the
 /// caller may simply try again later.
 @MainActor
-final class EDROverlayWindow: NSObject, MTKViewDelegate {
+final class EDROverlayWindow: NSObject, MTKViewDelegate, EDROverlaying {
     /// What the layer is cleared to while EDR is requested: premultiplied
     /// light at 1.6x SDR white and 1% opacity. Effectively invisible on one
     /// point of a rounded corner, but not fully transparent, so no
@@ -45,6 +45,15 @@ final class EDROverlayWindow: NSObject, MTKViewDelegate {
     private let window: NSWindow
     private let metalView: MTKView
     private let commandQueue: MTLCommandQueue
+    private var occlusionObserver: NSObjectProtocol?
+
+    /// Whether the window is on screen and not covered. A covered overlay
+    /// loses its EDR headroom after about 15 seconds.
+    var isVisible: Bool {
+        window.occlusionState.contains(.visible)
+    }
+
+    var onVisibilityChange: (() -> Void)?
 
     private init(displayID: CGDirectDisplayID, window: NSWindow, metalView: MTKView, commandQueue: MTLCommandQueue) {
         self.displayID = displayID
@@ -53,6 +62,21 @@ final class EDROverlayWindow: NSObject, MTKViewDelegate {
         self.commandQueue = commandQueue
         super.init()
         metalView.delegate = self
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.onVisibilityChange?()
+            }
+        }
+    }
+
+    isolated deinit {
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+        }
     }
 
     /// Mounts an overlay on `displayID`'s screen, released (EDR off, not
@@ -133,6 +157,12 @@ final class EDROverlayWindow: NSObject, MTKViewDelegate {
         window.orderFrontRegardless()
         metalView.draw()
         return true
+    }
+
+    /// Orders the window to the front again, for when something else at its
+    /// level was ordered in over it.
+    func bringToFront() {
+        window.orderFrontRegardless()
     }
 
     /// Requests EDR headroom: sets the layer's flag, draws a frame carrying

@@ -10,8 +10,9 @@ import CoreGraphics
 ///
 /// Extended Brightness / Boost (100–200%) is delegated to `BoostEngagement`
 /// (`BoostEngagement.swift`), since there is no reliable private "set
-/// brightness past 1.0" symbol on this hardware/OS. Factor 1.0 (500 nits,
-/// the Nominal ceiling) at 100%, factor 2.0 (1000 nits sustained) at 200%.
+/// brightness past 1.0" symbol on this hardware/OS. Factor 1.0 (the Nominal
+/// ceiling) at 100%, and at 200% the ceiling `BoostCalibration` derives from
+/// the panel's headroom (2.0, about 1000 nits sustained, on a 500-nit panel).
 ///
 /// Everything here targets the built-in display only. Its id is re-resolved
 /// whenever the display configuration changes (lid, hot-plug), and while no
@@ -22,15 +23,15 @@ import CoreGraphics
 /// own `NSScreen` lookups and `BoostEngagement` are main-thread-only anyway.
 @MainActor
 final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
-    private typealias SetBrightnessFunc = @convention(c) (CGDirectDisplayID, Float) -> Int32
-    private typealias GetBrightnessFunc = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
-
     private var displayID: CGDirectDisplayID?
-    private let setBrightness: SetBrightnessFunc?
-    private let getBrightness: GetBrightnessFunc?
+    private let symbols: DisplayServicesSymbols
     private let boostEngagement: BoostEngagement
     private var lastReportedConfiguration: Configuration
     private var screenParametersObserver: NSObjectProtocol?
+    private var reconfigurationObserver: DisplayReconfigurationObserver?
+    /// Which non-zero `DisplayServicesSetBrightness` results were already
+    /// logged, so a refusal repeated on every slider tick logs once.
+    private var reportedSetBrightnessFailures = DistinctCodeTracker()
     /// The last Boost verdict per display id, so a momentary loss of the
     /// panel's `NSScreen` does not flip Boost off and back on.
     private var boostVerdict: (displayID: CGDirectDisplayID, supported: Bool)?
@@ -43,15 +44,15 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         var displayID: CGDirectDisplayID?
         var supportsBoost: Bool
         var isAvailable: Bool
+        var nominalControl: NominalControlStatus
     }
 
     init() {
         let displayID = BuiltInDisplay.resolveID()
         self.displayID = displayID
-        self.setBrightness = Self.loadSetBrightnessSymbol()
-        self.getBrightness = Self.loadGetBrightnessSymbol()
+        self.symbols = DisplayServicesSymbols.load()
         self.boostEngagement = BoostEngagement(displayID: displayID)
-        self.lastReportedConfiguration = Configuration(displayID: displayID, supportsBoost: false, isAvailable: false)
+        self.lastReportedConfiguration = Configuration(displayID: displayID, supportsBoost: false, isAvailable: false, nominalControl: .available)
         self.lastReportedConfiguration = currentConfiguration(displayID: displayID)
         logHeadroom(displayID: displayID)
         self.screenParametersObserver = NotificationCenter.default.addObserver(
@@ -62,6 +63,9 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
             MainActor.assumeIsolated {
                 self?.displayConfigurationChanged()
             }
+        }
+        self.reconfigurationObserver = DisplayReconfigurationObserver { [weak self] in
+            self?.displayConfigurationChanged()
         }
     }
 
@@ -78,17 +82,35 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         return BuiltInDisplay.isActive(displayID)
     }
 
+    /// Whether Nominal brightness can be set right now: the private symbol
+    /// was found, and the system allows the built-in display's brightness to
+    /// change (it does not under a reference display preset). Boost does not
+    /// depend on it.
+    var nominalControl: NominalControlStatus {
+        let canChange = displayID.flatMap { id in symbols.canChangeBrightness.map { $0(id) } }
+        return NominalControlStatus.resolve(hasSetSymbol: symbols.setBrightness != nil, canChange: canChange)
+    }
+
     func apply(percentage: Double) -> BrightnessApplyOutcome {
         guard let displayID, isBuiltInDisplayAvailable else { return .displayUnavailable }
         applyNominal(percentage: percentage, displayID: displayID)
         return applyBoost(percentage: percentage)
     }
 
+    /// Sets the Nominal level. A missing symbol was already logged at load.
+    /// A refusal (a non-zero result, 1000 when the display cannot change
+    /// brightness) is logged once per distinct code; success re-arms the
+    /// log, so a later refusal is reported again.
     private func applyNominal(percentage: Double, displayID: CGDirectDisplayID) {
-        guard let setBrightness else { return }
+        guard let setBrightness = symbols.setBrightness else { return }
         let nominalPercentage = min(max(percentage, 0), BrightnessController.nominalCeilingPercentage)
         let value = Float(nominalPercentage / BrightnessController.nominalCeilingPercentage)
-        _ = setBrightness(displayID, value)
+        let result = setBrightness(displayID, value)
+        if result == 0 {
+            reportedSetBrightnessFailures.reset()
+        } else if reportedSetBrightnessFailures.isNew(result) {
+            Log.display.error("DisplayServicesSetBrightness failed with result \(result, privacy: .public) for display \(displayID, privacy: .public)")
+        }
     }
 
     /// `nil` when there is no built-in display, the symbol couldn't be
@@ -96,7 +118,7 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
     /// with no side effects, so it's safe to call from `BrightnessController.init`
     /// as well as afterwards to notice a change made outside BrightBoi.
     func currentNominalPercentage() -> Double? {
-        guard let displayID, let getBrightness else { return nil }
+        guard let displayID, let getBrightness = symbols.getBrightness else { return nil }
         var value: Float = 0
         let result = getBrightness(displayID, &value)
         guard result == 0 else { return nil }
@@ -136,22 +158,22 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         Configuration(
             displayID: displayID,
             supportsBoost: supportsBoost(displayID: displayID),
-            isAvailable: displayID.map(BuiltInDisplay.isActive) ?? false
+            isAvailable: displayID.map(BuiltInDisplay.isActive) ?? false,
+            nominalControl: nominalControl
         )
     }
 
     /// Logged once at launch, so a report of Boost missing (or wrongly
     /// offered) on some Mac shows the number the decision was made on.
     private func logHeadroom(displayID: CGDirectDisplayID?) {
-        let message: String
-        if let displayID {
-            let potential = BoostHeadroom.read(displayID: displayID).map { "\($0.potential)" } ?? "unreadable (no screen)"
-            let verdict = supportsBoost(displayID: displayID) ? "Boost available" : "Boost unavailable"
-            message = "BrightBoi: built-in display \(displayID): potential EDR headroom \(potential), Boost needs at least \(BoostHeadroom.minimumPotentialForBoost): \(verdict)"
-        } else {
-            message = "BrightBoi: no built-in display online: brightness control unavailable"
+        guard let displayID else {
+            Log.display.notice("No built-in display online: brightness control unavailable")
+            return
         }
-        FileHandle.standardError.write(Data((message + "\n").utf8))
+        let potential = BoostHeadroom.read(displayID: displayID)?.potential
+        let potentialText = potential.map { "\($0)" } ?? "unreadable (no screen)"
+        let verdict = supportsBoost(displayID: displayID) ? "Boost available" : "Boost unavailable"
+        Log.display.notice("Built-in display \(displayID, privacy: .public): potential EDR headroom \(potentialText, privacy: .public), Boost needs at least \(BoostHeadroom.minimumPotentialForBoost, privacy: .public): \(verdict, privacy: .public)")
     }
 
     private func applyBoost(percentage: Double) -> BrightnessApplyOutcome {
@@ -162,16 +184,15 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
 
         let boostRange = BrightnessController.maximumPercentage - BrightnessController.nominalCeilingPercentage
         let boostFraction = min(max(percentage - BrightnessController.nominalCeilingPercentage, 0), boostRange) / boostRange
-        let factor = CGGammaValue(1.0 + boostFraction)
-        return boostEngagement.engage(factor: factor)
+        return boostEngagement.engage(boostFraction: boostFraction)
     }
 
     /// Re-resolves the built-in display after the display configuration
     /// changed (lid closed or opened, a display plugged or unplugged, the
     /// arrangement changed). Boost follows first, so an overlay and a scaled
     /// table are never left on a display that is gone; the controller is only
-    /// told when its answers to `isBuiltInDisplayAvailable` or
-    /// `supportsExtendedBrightness()` actually changed.
+    /// told when its answers to `isBuiltInDisplayAvailable`,
+    /// `supportsExtendedBrightness()` or `nominalControl` actually changed.
     private func displayConfigurationChanged() {
         let newID = BuiltInDisplay.resolveID()
         boostEngagement.displayConfigurationChanged(displayID: newID)
@@ -180,39 +201,5 @@ final class LiveDisplayBrightnessProvider: DisplayBrightnessProviding {
         guard configuration != lastReportedConfiguration else { return }
         lastReportedConfiguration = configuration
         onDisplayConfigurationChange?()
-    }
-
-    /// `DisplayServices.framework` is private and undocumented — Apple can
-    /// change or remove this symbol in a future macOS update; that risk is
-    /// accepted. If it can't be loaded, brightness changes become a silent
-    /// no-op rather than crashing the menu bar app.
-    private static func loadSetBrightnessSymbol() -> SetBrightnessFunc? {
-        guard let handle = dlopen(
-            "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices",
-            RTLD_NOW
-        ) else {
-            FileHandle.standardError.write(Data("BrightBoi: could not dlopen DisplayServices.framework\n".utf8))
-            return nil
-        }
-        guard let symbol = dlsym(handle, "DisplayServicesSetBrightness") else {
-            FileHandle.standardError.write(Data("BrightBoi: could not dlsym DisplayServicesSetBrightness\n".utf8))
-            return nil
-        }
-        return unsafeBitCast(symbol, to: SetBrightnessFunc.self)
-    }
-
-    private static func loadGetBrightnessSymbol() -> GetBrightnessFunc? {
-        guard let handle = dlopen(
-            "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices",
-            RTLD_NOW
-        ) else {
-            FileHandle.standardError.write(Data("BrightBoi: could not dlopen DisplayServices.framework\n".utf8))
-            return nil
-        }
-        guard let symbol = dlsym(handle, "DisplayServicesGetBrightness") else {
-            FileHandle.standardError.write(Data("BrightBoi: could not dlsym DisplayServicesGetBrightness\n".utf8))
-            return nil
-        }
-        return unsafeBitCast(symbol, to: GetBrightnessFunc.self)
     }
 }

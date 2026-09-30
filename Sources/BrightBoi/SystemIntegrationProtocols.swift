@@ -47,10 +47,14 @@ protocol DisplayBrightnessProviding {
     /// monitor.
     var isBuiltInDisplayAvailable: Bool { get }
 
+    /// Whether Nominal (0–100%) brightness can be set right now. Re-read on
+    /// demand, since a display preset can lock it and unlock it again.
+    var nominalControl: NominalControlStatus { get }
+
     /// Called after the display configuration changed in a way that affects
-    /// `isBuiltInDisplayAvailable` or `supportsExtendedBrightness()`: the
-    /// built-in display appeared or disappeared (lid, hot-plug), or its
-    /// identity or capability changed. Never called before the first
+    /// `isBuiltInDisplayAvailable`, `supportsExtendedBrightness()` or
+    /// `nominalControl`: the built-in display appeared or disappeared (lid,
+    /// hot-plug), or its identity or capability changed. Never called before the first
     /// configuration change.
     var onDisplayConfigurationChange: (() -> Void)? { get set }
 
