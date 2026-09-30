@@ -13,14 +13,16 @@ import IOKit.hid
 ///   virtual keycodes, since Fn inverts the keyboard's default media-key
 ///   behavior.
 ///
-/// Any other configured combo (which per ADR-0007 always carries at least
-/// one modifier) only ever arrives as an ordinary `keyDown` event with
-/// matching modifier flags — it has no media-key form.
+/// Any other configured combo (which always carries at least one modifier)
+/// only ever arrives as an ordinary `keyDown` event with matching modifier
+/// flags — it has no media-key form.
 ///
 /// Registered with `.defaultTap` (not `.listenOnly`) and returns `nil` for
-/// every recognized combo, which is what actually supersedes macOS's native
-/// handling — a listen-only tap would still let the OS apply its own
-/// Nominal-range adjustment underneath BrightBoi's.
+/// every recognized combo that BrightBoi takes, which is what actually
+/// supersedes macOS's native handling — a listen-only tap would still let the
+/// OS apply its own Nominal-range adjustment underneath BrightBoi's. When
+/// BrightBoi declines a press (its display is off, for instance) the event
+/// goes through untouched and macOS handles the key.
 ///
 /// `@MainActor`: satisfies `KeyTapControlling`'s isolation, and lets
 /// `deinit` stop the tap synchronously (see below). The tap callback itself
@@ -53,7 +55,7 @@ final class RealKeyTap: KeyTapControlling {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var remap: KeyRemapShortcut?
-    private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
+    private var onKeyPress: ((BrightnessController.KeyPress) -> Bool)?
 
     /// Stops the tap if it's still running when the object goes away —
     /// belt-and-suspenders alongside `stop()`'s explicit call sites, for
@@ -64,7 +66,7 @@ final class RealKeyTap: KeyTapControlling {
         stop()
     }
 
-    func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
+    func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Bool) {
         self.remap = remap
         self.onKeyPress = onKeyPress
 
@@ -119,9 +121,7 @@ final class RealKeyTap: KeyTapControlling {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            FileHandle.standardError.write(Data(
-                "BrightBoi: could not create key event tap (Accessibility/Input Monitoring permission likely not granted yet)\n".utf8
-            ))
+            Log.keyTap.error("Could not create the key event tap (Accessibility or Input Monitoring permission likely not granted yet)")
             return
         }
 
@@ -151,7 +151,9 @@ final class RealKeyTap: KeyTapControlling {
             ?? modifiedKeyPress(from: type, cgEvent: cgEvent, remap: remap)
 
         guard let press else { return Unmanaged.passUnretained(cgEvent) }
-        onKeyPress?(press)
+        // Swallowed only when BrightBoi took the press; otherwise macOS gets
+        // the key exactly as it was sent.
+        guard onKeyPress?(press) == true else { return Unmanaged.passUnretained(cgEvent) }
         return nil
     }
 
@@ -187,7 +189,7 @@ final class RealKeyTap: KeyTapControlling {
     }
 
     /// The general path for any reconfigured combo — always carries at
-    /// least one modifier per ADR-0007, so it only ever arrives as an
+    /// least one modifier, so it only ever arrives as an
     /// ordinary `keyDown`, never a media-key event. Bridges through
     /// `NSEvent` (the same bridge the media-key path above already uses) so
     /// modifier-flag interpretation has one source of truth, shared with the

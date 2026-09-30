@@ -228,8 +228,24 @@ protocol BrightnessPersisting {
 /// to native macOS handling — used by the "Let BrightBoi own …" toggle.
 @MainActor
 protocol KeyTapControlling {
-    func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Void)
+    /// `onKeyPress` returns whether BrightBoi took the press. `false` lets
+    /// the event through untouched, so macOS handles the key itself.
+    func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Bool)
     func stop()
+}
+
+/// Reads the accessibility display options that change how the display's
+/// transfer table is read, and reports when they change. Only Invert Colors
+/// is exposed: it has a public signal, while Color Filters do not.
+/// `@MainActor` because the real implementation reads AppKit state.
+@MainActor
+protocol DisplayAccessibilityProviding {
+    /// Whether the system inverts the display's colours.
+    var invertsColors: Bool { get }
+
+    /// Calls `onChange` when an accessibility display option changed; the
+    /// caller re-reads what it cares about.
+    func startObserving(_ onChange: @escaping () -> Void)
 }
 
 /// Reports whether the Mac is currently running on battery power (not

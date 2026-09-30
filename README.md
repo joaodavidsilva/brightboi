@@ -21,15 +21,17 @@
 ## What it does
 
 Macs with a Liquid Retina XDR display (the mini-LED MacBook Pros) have real brightness
-headroom that Control Center never lets you touch — that headroom is reserved for XDR/HDR
-video content, and third-party apps that unlock it for everyday use only exist as paid
-downloads. BrightBoi gives you that same control for free, as a single continuous slider:
+headroom that Control Center never lets you touch, and third-party apps that unlock it for
+everyday use are mostly paid downloads. BrightBoi gives you that control for free, as a single
+continuous slider:
 
 - **0–200% on one slider.** 100% still means exactly what Control Center's 100% has always
-  meant (500 nits). 100–200% is **Extended Brightness / Boost**, unlocked via the same private
-  APIs XDR video already uses, capped at a **Boost Ceiling of 1000 nits** — the panel's real
-  sustained full-screen rating, not its 1600-nit peak-highlight spec that would just throttle
-  back down under sustained use.
+  meant (about 500 nits on the 14-inch and 16-inch M1 Pro and M1 Max panels). 100–200% is
+  **Extended Brightness / Boost**: a tiny invisible window keeps the display's extended
+  dynamic range (EDR) headroom available, and BrightBoi scales the display's gamma table
+  into it. The top of the slider is capped at about 1000 nits, the panel's sustained
+  full-screen rating, not its 1600-nit peak-highlight spec that would just throttle back down
+  under sustained use.
 - **Auto-Brightness Takeover.** Disables macOS's ambient-light-sensor-driven auto-brightness on
   launch, so it can never silently override the level you chose.
 - **5% steps** on both the slider and the physical brightness keys, so you always land on a
@@ -58,6 +60,14 @@ since the physical backlight headroom Boost relies on doesn't exist there.
 
 ## Known limitations
 
+- **HDR highlights while boosted.** Boost scales the whole display, HDR video and photos
+  included, so while the slider is above 100% their brightest highlights are lost. Boost is
+  off at 100% and below.
+- **Invert Colors.** With Invert Colors on, Boost is paused and the display stays at 100%,
+  because scaling the gamma table can darken an inverted image on Apple silicon. It comes back
+  when you turn Invert Colors off. Color Filters cannot be detected and are not handled.
+- **Screen saver and lock screen.** Boost steps aside while the screen saver or lock screen
+  covers the display, and returns when they end.
 - **Not notarized.** Builds are currently ad-hoc signed rather than signed with a Developer ID
   and notarized by Apple, since the app depends on private APIs the App Store disallows and a
   direct-distribution pipeline is still being finalized — hence the right-click-Open step above.

@@ -216,9 +216,9 @@ final class FakeKeyTap: KeyTapControlling {
     private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
     private(set) var lastStartedRemap: KeyRemapShortcut?
-    private var onKeyPress: ((BrightnessController.KeyPress) -> Void)?
+    private var onKeyPress: ((BrightnessController.KeyPress) -> Bool)?
 
-    func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Void) {
+    func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Bool) {
         startCallCount += 1
         lastStartedRemap = remap
         self.onKeyPress = onKeyPress
@@ -230,9 +230,12 @@ final class FakeKeyTap: KeyTapControlling {
     }
 
     /// Simulates a real key tap reporting a press, exercising the same
-    /// callback path `RealKeyTap` drives in production.
-    func simulateKeyPress(_ press: BrightnessController.KeyPress) {
-        onKeyPress?(press)
+    /// callback path `RealKeyTap` drives in production. Returns whether the
+    /// controller took the press: `true` means the real tap would swallow the
+    /// event, `false` that it would let macOS handle it.
+    @discardableResult
+    func simulateKeyPress(_ press: BrightnessController.KeyPress) -> Bool {
+        onKeyPress?(press) ?? false
     }
 }
 
@@ -279,6 +282,27 @@ final class FakeThermalStateProvider: ThermalStateProviding {
     /// Simulates an external thermal-state change without touching
     /// brightness — mutate `stubbedThermalState`, then call this to fire
     /// the same callback `RealThermalStateProvider` would.
+    func simulateChange() {
+        onChange?()
+    }
+}
+
+@MainActor
+final class FakeDisplayAccessibility: DisplayAccessibilityProviding {
+    var stubbedInvertsColors = false
+    private var onChange: (() -> Void)?
+
+    var invertsColors: Bool {
+        stubbedInvertsColors
+    }
+
+    func startObserving(_ onChange: @escaping () -> Void) {
+        self.onChange = onChange
+    }
+
+    /// Simulates the system announcing a change in the accessibility display
+    /// options — mutate `stubbedInvertsColors`, then call this to fire the
+    /// same callback `RealDisplayAccessibility` would.
     func simulateChange() {
         onChange?()
     }

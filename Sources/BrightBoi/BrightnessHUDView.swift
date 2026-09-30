@@ -35,7 +35,7 @@ struct BrightnessHUDView: View {
     var body: some View {
         let palette = BrightnessMenuContent.Palette(colorScheme: colorScheme)
 
-        VStack(spacing: 20) {
+        VStack(spacing: state.isBoostPaused ? 14 : 20) {
             Image(systemName: "sun.max.fill")
                 .font(.system(size: 44))
                 .foregroundStyle(state.isBoosted ? palette.boostBadgeText : palette.primaryText)
@@ -48,6 +48,14 @@ struct BrightnessHUDView: View {
                 }
             }
             .frame(width: Self.meterWidth)
+
+            if state.isBoostPaused {
+                Text("Boost paused — Invert Colors is on")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(palette.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(24)
         .frame(width: Self.panelSize.width, height: Self.panelSize.height)

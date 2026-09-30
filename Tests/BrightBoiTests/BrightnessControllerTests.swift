@@ -17,6 +17,7 @@ struct BrightnessControllerTests {
         let powerSource: FakePowerSourceProvider
         let thermalState: FakeThermalStateProvider
         let bundleLocation: FakeBundleLocationProvider
+        let displayAccessibility: FakeDisplayAccessibility
         let callLog: CallLog
         let scheduler: ManualPersistScheduler
     }
@@ -26,6 +27,8 @@ struct BrightnessControllerTests {
         persistenceDebounceInterval: TimeInterval = 0.3,
         supportsExtendedBrightness: Bool = true,
         isBuiltInDisplayAvailable: Bool = true,
+        stubbedNominalControl: NominalControlStatus = .available,
+        invertsColors: Bool = false,
         storedLaunchAtLoginEnabled: Bool? = nil,
         storedBoostCeiling: Double? = nil,
         storedKeyRemapEnabled: Bool? = nil,
@@ -52,6 +55,7 @@ struct BrightnessControllerTests {
         let displayBrightness = FakeDisplayBrightnessProvider()
         displayBrightness.stubbedSupportsExtendedBrightness = supportsExtendedBrightness
         displayBrightness.stubbedIsBuiltInDisplayAvailable = isBuiltInDisplayAvailable
+        displayBrightness.stubbedNominalControl = stubbedNominalControl
         displayBrightness.stubbedOutcome = stubbedDisplayApplyOutcome
         displayBrightness.stubbedCurrentNominalPercentage = stubbedCurrentNominalPercentage
         displayBrightness.callLog = callLog
@@ -82,6 +86,8 @@ struct BrightnessControllerTests {
         bundleLocation.bundlePath = bundlePath
         bundleLocation.isInApplicationsFolder = isInApplicationsFolder
         bundleLocation.isTranslocatedOrReadOnly = isTranslocatedOrReadOnly
+        let displayAccessibility = FakeDisplayAccessibility()
+        displayAccessibility.stubbedInvertsColors = invertsColors
         let scheduler = ManualPersistScheduler()
 
         let controller = BrightnessController(
@@ -93,6 +99,7 @@ struct BrightnessControllerTests {
             powerSource: powerSource,
             thermalState: thermalState,
             bundleLocation: bundleLocation,
+            displayAccessibility: displayAccessibility,
             persistenceDebounceInterval: persistenceDebounceInterval,
             schedule: scheduler.schedule
         )
@@ -110,6 +117,7 @@ struct BrightnessControllerTests {
             powerSource: powerSource,
             thermalState: thermalState,
             bundleLocation: bundleLocation,
+            displayAccessibility: displayAccessibility,
             callLog: callLog,
             scheduler: scheduler
         )
@@ -1320,5 +1328,183 @@ struct BrightnessControllerTests {
         let fixture = makeFixture(isLowPowerModeEnabled: true)
         fixture.controller.setPercentage(190)
         #expect(fixture.controller.currentState.percentage == 190)
+    }
+
+    // MARK: Brightness keys and the built-in display
+
+    @Test("a key press is taken and applied while the built-in display is active")
+    func keyPressTakenWhileBuiltInDisplayActive() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(50)
+
+        let taken = fixture.keyTap.simulateKeyPress(.raise)
+
+        #expect(taken == true)
+        #expect(fixture.controller.currentState.percentage == 55)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 55)
+    }
+
+    @Test("with the built-in display inactive a key press is declined and changes nothing")
+    func keyPressDeclinedWhileBuiltInDisplayInactive() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        fixture.controller.flushPendingPersist()
+        let appliedBefore = fixture.displayBrightness.appliedPercentages
+        let savedBefore = fixture.persistence.savedPercentages
+        var hudFired = false
+        fixture.controller.onKeyPress = { _, _ in hudFired = true }
+
+        // Lid closed: the display is gone, and the change notification has
+        // not reached the controller yet.
+        fixture.displayBrightness.stubbedIsBuiltInDisplayAvailable = false
+        let taken = fixture.keyTap.simulateKeyPress(.raise)
+
+        #expect(taken == false)
+        #expect(fixture.controller.currentState.percentage == 150)
+        #expect(fixture.displayBrightness.appliedPercentages == appliedBefore)
+        fixture.controller.flushPendingPersist()
+        #expect(fixture.persistence.savedPercentages == savedBefore)
+        #expect(hudFired == false)
+    }
+
+    @Test("the keys are taken again once the built-in display is back, and the Boost level is re-applied")
+    func keysResumeWhenBuiltInDisplayReturns() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        reconfigureDisplay(fixture, available: false, supportsBoost: false)
+        #expect(fixture.keyTap.simulateKeyPress(.lower) == false)
+
+        reconfigureDisplay(fixture, available: true, supportsBoost: true)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 150)
+
+        #expect(fixture.keyTap.simulateKeyPress(.lower) == true)
+        #expect(fixture.controller.currentState.percentage == 145)
+    }
+
+    // MARK: Nominal control
+
+    @Test("Nominal control is available by default")
+    func nominalControlAvailableByDefault() {
+        let fixture = makeFixture()
+        #expect(fixture.controller.currentState.nominalControlStatus == .available)
+        #expect(fixture.controller.currentState.nominalControlAvailable == true)
+    }
+
+    @Test("state reports Nominal control unavailable when the provider says so")
+    func nominalControlUnavailableFromProvider() {
+        let fixture = makeFixture(stubbedNominalControl: .symbolMissing)
+        #expect(fixture.controller.currentState.nominalControlAvailable == false)
+        #expect(fixture.controller.currentState.nominalControlStatus == .symbolMissing)
+    }
+
+    @Test("a preset locking brightness shows up when the popover next reads the display")
+    func nominalControlLockPickedUpOnSync() {
+        let fixture = makeFixture()
+        fixture.displayBrightness.stubbedNominalControl = .lockedBySystem
+
+        fixture.controller.syncFromDisplay()
+
+        #expect(fixture.controller.currentState.nominalControlStatus == .lockedBySystem)
+
+        fixture.displayBrightness.stubbedNominalControl = .available
+        fixture.controller.syncFromDisplay()
+        #expect(fixture.controller.currentState.nominalControlAvailable == true)
+    }
+
+    @Test("a display change that only affects Nominal control updates the state without re-applying")
+    func nominalControlChangeFromDisplayConfiguration() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(60)
+        let appliedBefore = fixture.displayBrightness.appliedPercentages
+
+        fixture.displayBrightness.stubbedNominalControl = .lockedBySystem
+        fixture.displayBrightness.onDisplayConfigurationChange?()
+
+        #expect(fixture.controller.currentState.nominalControlStatus == .lockedBySystem)
+        #expect(fixture.displayBrightness.appliedPercentages == appliedBefore)
+    }
+
+    @Test("Nominal control status is worded for its cause")
+    func nominalControlMessages() {
+        #expect(BrightnessMenuContent.nominalControlMessage(for: .available) == nil)
+        #expect(BrightnessMenuContent.nominalControlMessage(for: .symbolMissing)?.contains("macOS") == true)
+        #expect(BrightnessMenuContent.nominalControlMessage(for: .lockedBySystem)?.contains("preset") == true)
+    }
+
+    // MARK: Invert Colors
+
+    @Test("with Invert Colors on, a Boost level is chosen but the display stays at 100 and Boost is paused")
+    func invertColorsPausesBoost() {
+        let fixture = makeFixture(invertsColors: true)
+        fixture.controller.setPercentage(150)
+        fixture.controller.flushPendingPersist()
+
+        #expect(fixture.controller.currentState.percentage == 150)
+        #expect(fixture.controller.currentState.isBoostPaused == true)
+        #expect(fixture.controller.currentState.isBoosted == false)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 100)
+        #expect(fixture.displayBrightness.appliedPercentages.contains { $0 > 100 } == false)
+        #expect(fixture.persistence.storedPercentage == 150)
+    }
+
+    @Test("a paused Boost reports what the display delivers as its nits")
+    func pausedBoostNits() {
+        let fixture = makeFixture(invertsColors: true)
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.currentState.nits == 500)
+    }
+
+    @Test("turning Invert Colors off brings Boost back without touching the slider")
+    func invertColorsOffResumesBoost() {
+        let fixture = makeFixture(invertsColors: true)
+        fixture.controller.setPercentage(150)
+
+        fixture.displayAccessibility.stubbedInvertsColors = false
+        fixture.displayAccessibility.simulateChange()
+
+        #expect(fixture.displayBrightness.appliedPercentages.last == 150)
+        #expect(fixture.controller.currentState.isBoostPaused == false)
+        #expect(fixture.controller.currentState.isBoosted == true)
+        #expect(fixture.controller.currentState.percentage == 150)
+    }
+
+    @Test("turning Invert Colors on while boosted pauses Boost live")
+    func invertColorsOnWhileBoostedPausesLive() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        #expect(fixture.controller.currentState.isBoosted == true)
+
+        fixture.displayAccessibility.stubbedInvertsColors = true
+        fixture.displayAccessibility.simulateChange()
+
+        #expect(fixture.displayBrightness.appliedPercentages.last == 100)
+        #expect(fixture.controller.currentState.isBoostPaused == true)
+        #expect(fixture.controller.currentState.percentage == 150)
+    }
+
+    @Test("Invert Colors does not affect Nominal levels")
+    func invertColorsLeavesNominalAlone() {
+        let fixture = makeFixture(invertsColors: true)
+        fixture.controller.setPercentage(60)
+        #expect(fixture.displayBrightness.appliedPercentages.last == 60)
+        #expect(fixture.controller.currentState.isBoostPaused == false)
+    }
+
+    @Test("a repeated accessibility notification that changes nothing does not re-apply")
+    func unchangedInvertColorsIsIgnored() {
+        let fixture = makeFixture()
+        fixture.controller.setPercentage(150)
+        let appliedBefore = fixture.displayBrightness.appliedPercentages
+
+        fixture.displayAccessibility.simulateChange()
+
+        #expect(fixture.displayBrightness.appliedPercentages == appliedBefore)
+    }
+
+    @Test("a level restored at launch with Invert Colors on starts paused, not boosted")
+    func restoredBoostLevelStartsPausedUnderInvert() {
+        let fixture = makeFixture(storedPercentage: 150, invertsColors: true)
+        #expect(fixture.controller.currentState.isBoostPaused == true)
+        #expect(fixture.displayBrightness.appliedPercentages.contains { $0 > 100 } == false)
     }
 }

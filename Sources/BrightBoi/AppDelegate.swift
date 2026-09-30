@@ -29,7 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyTap: RealKeyTap(),
             powerSource: RealPowerSourceProvider(),
             thermalState: RealThermalStateProvider(),
-            bundleLocation: RealBundleLocationProvider()
+            bundleLocation: RealBundleLocationProvider(),
+            displayAccessibility: RealDisplayAccessibility()
         )
         self.permissions = PermissionsSnapshot(checker: RealPermissionsChecker())
         super.init()

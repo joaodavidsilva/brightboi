@@ -44,10 +44,7 @@ struct BrightnessMenuContent: View {
 
             quickSetRow(state: state, palette: palette)
 
-            if state.boostBlockedByOtherApp
-                || controller.batteryAdvisoryVisible
-                || controller.thermalAdvisory != nil
-                || controller.isLowPowerModeAdvisoryVisible {
+            if hasAdvisories(state: state) {
                 advisories(state: state, palette: palette)
             }
 
@@ -92,6 +89,14 @@ struct BrightnessMenuContent: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
                     .background(palette.boostBadgeBackground, in: RoundedRectangle(cornerRadius: 5))
+            } else if state.isBoostPaused {
+                Text("BOOST PAUSED")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.3)
+                    .foregroundStyle(palette.secondaryText)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 5))
             }
         }
     }
@@ -101,7 +106,7 @@ struct BrightnessMenuContent: View {
             Text("\(Int(state.percentage.rounded()))%")
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundStyle(palette.primaryText)
-            Text("\(Int(state.nits.rounded())) nits")
+            Text("~\(Int(state.nits.rounded())) nits")
                 .font(.system(size: 12))
                 .foregroundStyle(palette.secondaryText)
         }
@@ -111,7 +116,7 @@ struct BrightnessMenuContent: View {
         HStack {
             Text("0")
             Spacer()
-            Text("100% · 500 nits")
+            Text("100% · ~500 nits")
             Spacer()
             Text("200%")
         }
@@ -153,6 +158,19 @@ struct BrightnessMenuContent: View {
         .buttonStyle(.plain)
     }
 
+    /// Whether anything below the quick-set row has something to say. The
+    /// HDR footnote counts: it is shown only while Boost is actually on.
+    private func hasAdvisories(state: BrightnessController.State) -> Bool {
+        state.boostBlockedByOtherApp
+            || state.isBoostPaused
+            || state.isBoosted
+            || !state.builtInDisplayAvailable
+            || !state.nominalControlAvailable
+            || controller.batteryAdvisoryVisible
+            || controller.thermalAdvisory != nil
+            || controller.isLowPowerModeAdvisoryVisible
+    }
+
     /// The Boost-blocked banner reports a real refusal (see `BoostEngagement`'s
     /// gamma-capture guard); the battery/thermal/Low-Power-Mode banners below
     /// it are purely informational — none of them ever blocks or clamps the
@@ -161,6 +179,22 @@ struct BrightnessMenuContent: View {
     /// ever appears at once.
     private func advisories(state: BrightnessController.State, palette: Palette) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if !state.builtInDisplayAvailable {
+                AdvisoryBanner(
+                    icon: "display",
+                    text: "The built-in display is off. BrightBoi leaves the brightness keys to macOS until it is back.",
+                    palette: palette
+                )
+            } else if let message = Self.nominalControlMessage(for: state.nominalControlStatus) {
+                AdvisoryBanner(icon: "exclamationmark.triangle.fill", text: message, palette: palette)
+            }
+            if state.isBoostPaused {
+                AdvisoryBanner(
+                    icon: "circle.lefthalf.filled",
+                    text: "Boost paused — Invert Colors is on. Turn it off to bring Boost back.",
+                    palette: palette
+                )
+            }
             if state.boostBlockedByOtherApp {
                 AdvisoryBanner(
                     icon: "exclamationmark.triangle.fill",
@@ -191,6 +225,27 @@ struct BrightnessMenuContent: View {
                     palette: palette
                 )
             }
+            if state.isBoosted && state.builtInDisplayAvailable {
+                // Boost scales the whole display, HDR included; nothing can
+                // be done about it, so it is a footnote, not a warning.
+                Text("While boosted, HDR video and photos lose their brightest highlights.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(palette.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// What to tell the user when Nominal brightness cannot be set, worded
+    /// for the cause. `nil` when it can.
+    static func nominalControlMessage(for status: NominalControlStatus) -> String? {
+        switch status {
+        case .available:
+            nil
+        case .symbolMissing:
+            "This version of macOS blocked BrightBoi's brightness control below 100%. Check for an update."
+        case .lockedBySystem:
+            "Brightness is locked by the current display preset."
         }
     }
 

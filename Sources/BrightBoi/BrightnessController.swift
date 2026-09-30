@@ -72,6 +72,20 @@ final class BrightnessController {
         /// never redirected to an external monitor. Defaults to `true` so a
         /// state built for display purposes alone need not name it.
         var builtInDisplayAvailable: Bool = true
+
+        /// Whether brightness below 100% can be set: it cannot when the
+        /// private symbol is gone after a macOS update, or while a display
+        /// preset locks brightness. Boost does not depend on it. Defaults to
+        /// available so a state built for display purposes alone need not
+        /// name it.
+        var nominalControlStatus: NominalControlStatus = .available
+
+        /// `true` while a level above 100% is chosen but Boost is held at
+        /// Nominal 100% because Invert Colors is on: the transfer table is
+        /// applied before the inversion on Apple silicon, so scaling it would
+        /// darken the image. The chosen level is kept and Boost comes back
+        /// when Invert is turned off.
+        var isBoostPaused: Bool = false
         var launchAtLoginEnabled: Bool
         var launchAtLoginNeedsApproval: Bool
         var launchAtLoginStatusMessage: String?
@@ -86,11 +100,17 @@ final class BrightnessController {
         /// whether or not it succeeds.
         var boostBlockedByOtherApp: Bool
 
-        /// 5 nits per percentage point — 100% is the old 500-nit Nominal
-        /// ceiling, 200% is the 1000-nit Boost ceiling, per ADR-0002.
-        var nits: Double { percentage * 5 }
+        /// Whether Nominal brightness can be set.
+        var nominalControlAvailable: Bool { nominalControlStatus == .available }
 
-        /// Same 5-nits-per-point conversion, applied to the configured Boost
+        /// An estimate of 5 nits per percentage point: 100% is about the 500
+        /// nits of the 14-inch and 16-inch M1 Pro and M1 Max panels, 200%
+        /// about their 1000-nit sustained rating. Other XDR panels have a
+        /// different Nominal ceiling, so show it with a tilde. A paused Boost
+        /// shows what the display actually delivers.
+        var nits: Double { (isBoostPaused ? min(percentage, BrightnessController.nominalCeilingPercentage) : percentage) * 5 }
+
+        /// Same 5-nits-per-point estimate, applied to the configured Boost
         /// Ceiling rather than the live percentage — what Settings' "Don't
         /// let me go past" row shows.
         var boostCeilingNits: Double { boostCeiling * 5 }
@@ -168,6 +188,7 @@ final class BrightnessController {
     private let powerSource: PowerSourceProviding
     private let thermalStateProvider: ThermalStateProviding
     private let bundleLocation: BundleLocationProviding
+    private let displayAccessibility: DisplayAccessibilityProviding
 
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
@@ -175,6 +196,10 @@ final class BrightnessController {
     /// the built-in display comes and goes; see `displayConfigurationDidChange`.
     private var supportsBoost: Bool
     private var builtInDisplayAvailable: Bool
+    private var nominalControlStatus: NominalControlStatus
+    /// Mirrors `DisplayAccessibilityProviding.invertsColors`; Boost is
+    /// paused while it is on.
+    private var invertsColors: Bool
     /// The Boost level (above 100%) the user had before Boost became
     /// unavailable — the built-in display went away, or the session started
     /// without it. Put back when Boost returns, and cleared by any deliberate
@@ -222,6 +247,7 @@ final class BrightnessController {
         powerSource: PowerSourceProviding,
         thermalState: ThermalStateProviding,
         bundleLocation: BundleLocationProviding,
+        displayAccessibility: DisplayAccessibilityProviding,
         keyStepPercentage: Double = percentageGranularity,
         persistenceDebounceInterval: TimeInterval = 0.3,
         schedule: @escaping PersistScheduler = { delay, work in
@@ -236,6 +262,7 @@ final class BrightnessController {
         self.powerSource = powerSource
         self.thermalStateProvider = thermalState
         self.bundleLocation = bundleLocation
+        self.displayAccessibility = displayAccessibility
         self.keyStepPercentage = keyStepPercentage
         self.persistenceDebounceInterval = persistenceDebounceInterval
         self.schedule = schedule
@@ -247,6 +274,10 @@ final class BrightnessController {
         self.supportsBoost = supportsBoost
         let builtInDisplayAvailable = displayBrightness.isBuiltInDisplayAvailable
         self.builtInDisplayAvailable = builtInDisplayAvailable
+        let nominalControlStatus = displayBrightness.nominalControl
+        self.nominalControlStatus = nominalControlStatus
+        let invertsColors = displayAccessibility.invertsColors
+        self.invertsColors = invertsColors
 
         // `nil` (fresh install) defaults to `maximumPercentage`, identical
         // to today's fixed 200% ceiling until deliberately lowered. Snapped
@@ -310,6 +341,8 @@ final class BrightnessController {
             for: restoredPercentage,
             supportsBoost: supportsBoost,
             builtInDisplayAvailable: builtInDisplayAvailable,
+            nominalControlStatus: nominalControlStatus,
+            invertsColors: invertsColors,
             launchAtLoginEnabled: launchAtLoginEnabled,
             launchAtLoginNeedsApproval: false,
             launchAtLoginStatusMessage: nil,
@@ -370,6 +403,10 @@ final class BrightnessController {
             startKeyTap(remap: keyRemapShortcut)
         }
 
+        displayAccessibility.startObserving { [weak self] in self?.refreshInvertColors() }
+        refreshInvertColors()
+        refreshNominalControl()
+
         powerSource.startObserving { [weak self] in self?.refreshObservedPowerState() }
         thermalStateProvider.startObserving { [weak self] in self?.refreshObservedThermalState() }
     }
@@ -402,11 +439,22 @@ final class BrightnessController {
         schedulePersist(currentState.percentage)
     }
 
-    func handleKeyPress(_ press: KeyPress) {
+    /// Applies a brightness-key press. Returns `false`, touching nothing, when
+    /// the built-in display is not active (lid closed): the key tap then lets
+    /// the press through so macOS sends it to a display that can use it, and
+    /// nothing moves on a panel nobody can see. The check reads the display
+    /// live rather than the last reported state, so a press made a moment
+    /// after the lid closed is not swallowed. Display sleep does not count as
+    /// inactive: a key press is often what wakes an idle panel, and macOS
+    /// handling it underneath would put the two out of sync.
+    @discardableResult
+    func handleKeyPress(_ press: KeyPress) -> Bool {
+        guard displayBrightness.isBuiltInDisplayAvailable else { return false }
         syncFromDisplay()
         let delta = press == .raise ? keyStepPercentage : -keyStepPercentage
         setPercentage(currentState.percentage + delta)
         onKeyPress?(press, currentState)
+        return true
     }
 
     /// Re-reads the display's live Nominal brightness and adopts it when
@@ -422,6 +470,7 @@ final class BrightnessController {
     /// write anyway, through its own `setPercentage` call right after) and
     /// from the popover/Settings appearing.
     func syncFromDisplay() {
+        refreshNominalControl()
         guard let reading = displayBrightness.currentNominalPercentage(), reading.isFinite else { return }
         let expectedNominal = min(currentState.percentage, Self.nominalCeilingPercentage)
         guard abs(reading - expectedNominal) > Self.displaySyncTolerancePercentage else { return }
@@ -473,6 +522,8 @@ final class BrightnessController {
             for: currentState.percentage,
             supportsBoost: supportsBoost,
             builtInDisplayAvailable: builtInDisplayAvailable,
+            nominalControlStatus: nominalControlStatus,
+            invertsColors: invertsColors,
             launchAtLoginEnabled: status == .enabled || status == .requiresApproval,
             launchAtLoginNeedsApproval: status == .requiresApproval,
             launchAtLoginStatusMessage: message,
@@ -633,6 +684,7 @@ final class BrightnessController {
     /// While no built-in display is online nothing is applied at all: there
     /// is nothing to drive, and no other display is ever driven instead.
     private func displayConfigurationDidChange() {
+        refreshNominalControl()
         let nowSupportsBoost = displayBrightness.supportsExtendedBrightness()
         let nowAvailable = displayBrightness.isBuiltInDisplayAvailable
         guard nowSupportsBoost != supportsBoost || nowAvailable != builtInDisplayAvailable else { return }
@@ -660,7 +712,7 @@ final class BrightnessController {
 
     private func startKeyTap(remap: KeyRemapShortcut) {
         keyTap.start(remap: remap) { [weak self] press in
-            self?.handleKeyPress(press)
+            self?.handleKeyPress(press) ?? false
         }
     }
 
@@ -672,10 +724,45 @@ final class BrightnessController {
     /// reached; only the former also raises the "another app" banner, since
     /// a capture failure isn't caused by another app.
     private func applyToDisplay(percentage: Double) {
-        let outcome = displayBrightness.apply(percentage: percentage)
+        // With Invert Colors on, Boost stays off and the display sits at
+        // Nominal 100%; the level in `currentState` is still the one chosen.
+        let shownOnDisplay = Self.isBoostPaused(percentage: percentage, invertsColors: invertsColors)
+            ? Self.nominalCeilingPercentage
+            : percentage
+        let outcome = displayBrightness.apply(percentage: shownOnDisplay)
         let blockedByOtherApp = outcome == .boostBlockedByOtherApp
         let effectivePercentage = outcome == .applied ? percentage : min(percentage, Self.nominalCeilingPercentage)
         currentState = updatedState(percentage: effectivePercentage, boostBlockedByOtherApp: blockedByOtherApp)
+    }
+
+    /// Whether Boost is held back by Invert Colors for a chosen `percentage`.
+    nonisolated static func isBoostPaused(percentage: Double, invertsColors: Bool) -> Bool {
+        invertsColors && percentage > nominalCeilingPercentage
+    }
+
+    /// Re-reads Invert Colors and, when it changed while a Boost level is
+    /// chosen, applies the level again so Boost pauses or resumes without the
+    /// user touching the slider.
+    private func refreshInvertColors() {
+        let inverted = displayAccessibility.invertsColors
+        guard inverted != invertsColors else { return }
+        invertsColors = inverted
+        if currentState.percentage > Self.nominalCeilingPercentage, builtInDisplayAvailable {
+            applyToDisplay(percentage: currentState.percentage)
+        } else {
+            currentState = updatedState(percentage: currentState.percentage)
+        }
+    }
+
+    /// Re-reads whether Nominal brightness can be set, so the popover can say
+    /// so. Checked at launch, when the popover opens and when the display
+    /// configuration changes; a display preset can lock and unlock brightness
+    /// at any time.
+    private func refreshNominalControl() {
+        let status = displayBrightness.nominalControl
+        guard status != nominalControlStatus else { return }
+        nominalControlStatus = status
+        currentState = updatedState(percentage: currentState.percentage)
     }
 
     /// Re-reads `isOnBatteryPower`/`isLowPowerModeEnabled` and assigns only
@@ -794,6 +881,8 @@ final class BrightnessController {
             for: percentage,
             supportsBoost: supportsBoost,
             builtInDisplayAvailable: builtInDisplayAvailable,
+            nominalControlStatus: nominalControlStatus,
+            invertsColors: invertsColors,
             launchAtLoginEnabled: launchAtLoginEnabled ?? currentState.launchAtLoginEnabled,
             launchAtLoginNeedsApproval: currentState.launchAtLoginNeedsApproval,
             launchAtLoginStatusMessage: currentState.launchAtLoginStatusMessage,
@@ -880,6 +969,8 @@ final class BrightnessController {
         for percentage: Double,
         supportsBoost: Bool,
         builtInDisplayAvailable: Bool,
+        nominalControlStatus: NominalControlStatus,
+        invertsColors: Bool,
         launchAtLoginEnabled: Bool,
         launchAtLoginNeedsApproval: Bool,
         launchAtLoginStatusMessage: String?,
@@ -889,12 +980,15 @@ final class BrightnessController {
         autoBrightnessTakeoverEnabled: Bool,
         boostBlockedByOtherApp: Bool
     ) -> State {
-        State(
+        let boostPaused = isBoostPaused(percentage: percentage, invertsColors: invertsColors)
+        return State(
             percentage: percentage,
-            isBoosted: percentage > nominalCeilingPercentage,
+            isBoosted: percentage > nominalCeilingPercentage && !boostPaused,
             iconFillFraction: percentage / effectiveMaximum(supportsBoost: supportsBoost),
             supportsBoost: supportsBoost,
             builtInDisplayAvailable: builtInDisplayAvailable,
+            nominalControlStatus: nominalControlStatus,
+            isBoostPaused: boostPaused,
             launchAtLoginEnabled: launchAtLoginEnabled,
             launchAtLoginNeedsApproval: launchAtLoginNeedsApproval,
             launchAtLoginStatusMessage: launchAtLoginStatusMessage,
