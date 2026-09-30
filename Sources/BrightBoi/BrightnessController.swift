@@ -53,9 +53,9 @@ final class BrightnessController {
     /// advisory simply never fires.
     nonisolated static let batteryAdvisoryThresholdPercentage: Double = 170
 
-    /// The thermal advisory's heuristic "delivered %" offsets — see
-    /// ADR-0005: not a measurement, just how far below the requested
-    /// percentage each thermal state is assumed to land.
+    /// The thermal advisory's heuristic "delivered %" offsets: not a
+    /// measurement, just how far below the requested percentage each
+    /// thermal state is assumed to land.
     nonisolated static let thermalSeriousDeliveredOffset: Double = 20
     nonisolated static let thermalCriticalDeliveredOffset: Double = 40
 
@@ -142,7 +142,7 @@ final class BrightnessController {
     /// wall clock.
     typealias PersistScheduler = (TimeInterval, @escaping @Sendable () -> Void) -> Void
 
-    /// The thermal-throttle advisory's content — see ADR-0005: `deliveredPercentage`
+    /// The thermal-throttle advisory's content: `deliveredPercentage`
     /// is a heuristic estimate (`.serious` → requested − 20, `.critical` →
     /// requested − 40, floored at 100%), never a measurement.
     struct ThermalAdvisory: Equatable {
