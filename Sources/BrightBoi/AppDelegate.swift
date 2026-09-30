@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 /// Owns every launch-time side effect BrightBoi has. `init` builds the
-/// controller and the permissions snapshot with no side effects, so
+/// controller and the permissions model with no side effects, so
 /// `BrightBoiApp.body` — read right after `App.init` returns, before
 /// `NSApplication` has finished launching — has something to construct its
 /// scenes from immediately. Everything that actually touches the display,
@@ -13,7 +13,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let controller: BrightnessController
-    let permissions: PermissionsSnapshot
+    let permissions: PermissionsModel
 
     private let persistence = RealBrightnessPersistence()
     private let hud = BrightnessHUDController()
@@ -21,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var donationWindow: DonationWindowController?
 
     override init() {
+        let permissions = PermissionsModel(checker: RealPermissionsChecker())
+        self.permissions = permissions
         self.controller = BrightnessController(
             displayBrightness: LiveDisplayBrightnessProvider(),
             autoBrightnessToggle: RealAutoBrightnessToggle(),
@@ -30,9 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             powerSource: RealPowerSourceProvider(),
             thermalState: RealThermalStateProvider(),
             bundleLocation: RealBundleLocationProvider(),
-            displayAccessibility: RealDisplayAccessibility()
+            displayAccessibility: RealDisplayAccessibility(),
+            permissions: permissions
         )
-        self.permissions = PermissionsSnapshot(checker: RealPermissionsChecker())
         super.init()
     }
 
@@ -69,6 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hud.present(state: state)
         }
         controller.start()
+        permissions.startObservingSystemNotifications()
+        // The onboarding window ends up behind System Settings while the user
+        // grants access there; bring it back once the grant is seen.
+        permissions.addGrantObserver { [weak self] in
+            self?.onboardingWindow?.bringToFront()
+        }
 
         donationWindow = DonationWindowController(onClose: { [weak self] in
             self?.donationWindow = nil
@@ -76,10 +84,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         donationWindow?.show()
 
         if OnboardingModel.shouldShow(persistence: persistence) {
-            let model = OnboardingModel(persistence: persistence, permissionsChecker: RealPermissionsChecker())
+            let model = OnboardingModel(persistence: persistence, permissions: permissions)
             let window = OnboardingWindowController(model: model, onClose: { [weak self] in
                 self?.onboardingWindow = nil
                 NSApp.setActivationPolicy(.accessory)
+                // Whichever way onboarding ended, re-read the permissions so
+                // the key tap comes up if access was granted meanwhile.
+                self?.controller.permissionsMayHaveChanged()
             })
             onboardingWindow = window
             window.show()

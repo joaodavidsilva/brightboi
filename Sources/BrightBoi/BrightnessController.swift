@@ -180,6 +180,17 @@ final class BrightnessController {
     @ObservationIgnored
     var onKeyPress: ((KeyPress, State) -> Void)?
 
+    /// Whether the key remap is working: `false` while Key Remap is on but its
+    /// event tap could not be installed (the Accessibility permission was not
+    /// granted yet, for instance), so the keys are still handled by macOS.
+    /// Always `false` while Key Remap is off. The controller keeps retrying
+    /// while this is `false` and Key Remap is on.
+    private(set) var keyRemapActive = false
+
+    /// Another app that takes the brightness keys before BrightBoi sees them,
+    /// when one was noticed. Best effort; see `KeyTapConflict`.
+    private(set) var keyTapConflict: KeyTapConflict?
+
     private var displayBrightness: DisplayBrightnessProviding
     private let autoBrightnessToggle: AutoBrightnessToggling
     private let loginItemService: LoginItemRegistering
@@ -189,6 +200,7 @@ final class BrightnessController {
     private let thermalStateProvider: ThermalStateProviding
     private let bundleLocation: BundleLocationProviding
     private let displayAccessibility: DisplayAccessibilityProviding
+    let permissions: PermissionsModel
 
     private let keyStepPercentage: Double
     private let persistenceDebounceInterval: TimeInterval
@@ -212,8 +224,16 @@ final class BrightnessController {
     private var keyRemapShortcut: KeyRemapShortcut
     private var autoBrightnessTakeoverEnabled: Bool
     private var hasStarted = false
+    /// Whether a retry check is already scheduled while the key tap is down.
+    @ObservationIgnored
+    private var isWatchingKeyTap = false
+    /// Tap start attempts the poll has made while Accessibility is already
+    /// granted; reset by every discrete retry.
+    private var keyTapPollRetries = 0
+    private static let maxKeyTapPollRetries = 3
     private var lastLaunchAtLoginError: String?
     private let schedule: PersistScheduler
+    private let keyTapWatchSchedule: PersistScheduler
     /// The percentage most recently handed to `schedulePersist`, still
     /// unsaved — `nil` once it's been saved (by the scheduled fire or by
     /// `flushPendingPersist`). Read by `flushPendingPersist`; the scheduled
@@ -248,9 +268,13 @@ final class BrightnessController {
         thermalState: ThermalStateProviding,
         bundleLocation: BundleLocationProviding,
         displayAccessibility: DisplayAccessibilityProviding,
+        permissions: PermissionsModel,
         keyStepPercentage: Double = percentageGranularity,
         persistenceDebounceInterval: TimeInterval = 0.3,
         schedule: @escaping PersistScheduler = { delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        },
+        keyTapWatchSchedule: @escaping PersistScheduler = { delay, work in
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
     ) {
@@ -263,9 +287,11 @@ final class BrightnessController {
         self.thermalStateProvider = thermalState
         self.bundleLocation = bundleLocation
         self.displayAccessibility = displayAccessibility
+        self.permissions = permissions
         self.keyStepPercentage = keyStepPercentage
         self.persistenceDebounceInterval = persistenceDebounceInterval
         self.schedule = schedule
+        self.keyTapWatchSchedule = keyTapWatchSchedule
 
         // Boost needs a built-in display whose panel can grant EDR headroom.
         // That can change mid-session when the display comes or goes (lid,
@@ -399,6 +425,13 @@ final class BrightnessController {
         }
 
         syncLaunchAtLoginAtStart()
+        keyTap.observeConflicts { [weak self] in
+            guard let self else { return }
+            keyTapConflict = keyTap.conflict
+        }
+        // A permission granted while the app runs, whether in onboarding or in
+        // System Settings, brings the key tap up without a relaunch.
+        permissions.addGrantObserver { [weak self] in self?.retryKeyTapIfNeeded() }
         if keyRemapEnabled {
             startKeyTap(remap: keyRemapShortcut)
         }
@@ -561,7 +594,31 @@ final class BrightnessController {
             startKeyTap(remap: keyRemapShortcut)
         } else {
             keyTap.stop()
+            keyRemapActive = false
+            keyTapConflict = nil
         }
+    }
+
+    /// Starts the key tap again when Key Remap is on but the tap is not
+    /// running, with the persisted shortcut. Called when a permission was
+    /// just granted, when Settings or the popover opens, and from the
+    /// "Try again" button. A no-op when Key Remap is off or the tap is
+    /// already running, so it is safe to call on every discrete event.
+    func retryKeyTapIfNeeded() {
+        keyTapPollRetries = 0
+        guard hasStarted, keyRemapEnabled, !keyTap.isActive else {
+            if keyRemapEnabled { keyRemapActive = keyTap.isActive }
+            return
+        }
+        startKeyTap(remap: keyRemapShortcut)
+    }
+
+    /// Re-reads the permissions and retries the key tap: the discrete events
+    /// that may follow a change made in System Settings (Settings or the
+    /// popover opening).
+    func permissionsMayHaveChanged() {
+        permissions.refresh()
+        retryKeyTapIfNeeded()
     }
 
     /// Restarts the tap live with the new combo when the remap is currently
@@ -713,6 +770,45 @@ final class BrightnessController {
     private func startKeyTap(remap: KeyRemapShortcut) {
         keyTap.start(remap: remap) { [weak self] press in
             self?.handleKeyPress(press) ?? false
+        }
+        keyRemapActive = keyTap.isActive
+        keyTapConflict = keyTap.conflict
+        watchKeyTapUntilActive()
+    }
+
+    /// How often the key tap's permission is re-read while the tap is down.
+    /// Only `AXIsProcessTrusted()`-style reads run here, never a tap
+    /// creation: `PermissionsModel.refresh()` retries the tap only when a
+    /// grant newly appears.
+    private static let keyTapWatchInterval: TimeInterval = 1.5
+
+    /// While Key Remap is on and the tap is down, re-reads the permissions on a
+    /// short interval so a grant made in System Settings takes effect without
+    /// a relaunch. When Accessibility is already granted but the tap will not
+    /// come up, it tries a few more times, then leaves the matter to the
+    /// discrete events (and the Relaunch notice). Stops by itself once the tap
+    /// is running, Key Remap is off, or those attempts are used up.
+    private func watchKeyTapUntilActive() {
+        guard keyRemapEnabled, !keyRemapActive, !isWatchingKeyTap else { return }
+        guard !(permissions.accessibilityGranted && keyTapPollRetries >= Self.maxKeyTapPollRetries) else { return }
+        isWatchingKeyTap = true
+        keyTapWatchSchedule(Self.keyTapWatchInterval) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.keyTapWatchFired()
+            }
+        }
+    }
+
+    private func keyTapWatchFired() {
+        isWatchingKeyTap = false
+        guard keyRemapEnabled, !keyRemapActive else { return }
+        permissions.refresh()
+        guard !keyRemapActive, !isWatchingKeyTap else { return }
+        if permissions.accessibilityGranted, keyTapPollRetries < Self.maxKeyTapPollRetries {
+            keyTapPollRetries += 1
+            startKeyTap(remap: keyRemapShortcut)
+        } else {
+            watchKeyTapUntilActive()
         }
     }
 

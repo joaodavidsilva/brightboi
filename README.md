@@ -55,8 +55,10 @@ since the physical backlight headroom Boost relies on doesn't exist there.
    double-click will be blocked by Gatekeeper with an "unidentified developer" warning. Opening
    it this way once is enough — macOS remembers your choice after that.
 4. A sun icon appears in your menu bar. Click it for the brightness slider.
-5. macOS will ask for **Accessibility** and **Input Monitoring** permissions (needed to remap
-   the physical brightness keys) — grant both in System Settings when prompted.
+5. To take over the physical brightness keys (F1/F2), BrightBoi needs the **Accessibility**
+   permission. Grant it in System Settings when prompted. BrightBoi picks the permission up while it
+   runs; if the keys still stay with macOS, use "Relaunch BrightBoi" in Settings. The slider and
+   custom shortcuts work without it.
 
 ## Known limitations
 
@@ -66,6 +68,12 @@ since the physical backlight headroom Boost relies on doesn't exist there.
 - **Invert Colors.** With Invert Colors on, Boost is paused and the display stays at 100%,
   because scaling the gamma table can darken an inverted image on Apple silicon. It comes back
   when you turn Invert Colors off. Color Filters cannot be detected and are not handled.
+- **One app per brightness key.** Only one app can own the brightness keys. If you also run
+  MonitorControl, Lunar, BetterDisplay or BetterTouchTool with brightness-key handling on, the
+  one that started last gets the keys and the other never sees them, so which one wins depends
+  on launch order. When it can, BrightBoi notices a swallowed key press and says so in
+  Settings, though it cannot always tell which app took it. To use both, turn off
+  brightness-key handling in the other app, or turn off "Let BrightBoi own F1 / F2" in Settings.
 - **Screen saver and lock screen.** Boost steps aside while the screen saver or lock screen
   covers the display, and returns when they end.
 - **Not notarized.** Builds are currently ad-hoc signed rather than signed with a Developer ID

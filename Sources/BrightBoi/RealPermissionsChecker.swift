@@ -1,15 +1,22 @@
 import AppKit
 import IOKit.hid
 
-/// Real `PermissionsChecking`, reading (and, via onboarding, requesting) the
-/// same two system permissions `RealKeyTap`'s event tap depends on.
+/// Real `PermissionsChecking`, reading and requesting the system permissions
+/// the key tap may depend on.
 final class RealPermissionsChecker: PermissionsChecking {
     func accessibilityGranted() -> Bool {
         AXIsProcessTrusted()
     }
 
-    func inputMonitoringGranted() -> Bool {
-        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
+    /// `IOHIDCheckAccess` is the one read that tells a denial from a question
+    /// macOS has not asked yet; `CGPreflightListenEventAccess` only reports a
+    /// Bool for the same permission.
+    func inputMonitoringAccess() -> PermissionAccess {
+        switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+        case kIOHIDAccessTypeGranted: .granted
+        case kIOHIDAccessTypeDenied: .denied
+        default: .unknown
+        }
     }
 
     /// Referenced by its raw key name rather than the
@@ -23,6 +30,6 @@ final class RealPermissionsChecker: PermissionsChecking {
     }
 
     func requestInputMonitoring() {
-        _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        _ = CGRequestListenEventAccess()
     }
 }

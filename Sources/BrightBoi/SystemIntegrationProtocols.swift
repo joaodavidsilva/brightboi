@@ -215,23 +215,37 @@ protocol BrightnessPersisting {
     func loadAutoBrightnessTakeoverEnabled() -> Bool?
 }
 
-/// Starts/stops the system-wide Key Remap tap. `RealKeyTap` supplies the real
-/// `CGEventTap`-backed implementation. `onKeyPress` is how the tap reports
-/// each intercepted press back to `BrightnessController` — the tap itself
-/// has no reference to the controller. `@MainActor` because the real
-/// implementation drives AppKit/Core Graphics event-tap state that's only
-/// safe to touch from the main thread.
+/// Starts/stops the system-wide Key Remap. `RealKeyTap` supplies the real
+/// implementation: an event tap for the bare brightness keys and system hot
+/// keys for custom combos. `onKeyPress` is how it reports each intercepted
+/// press back to `BrightnessController`, which it has no reference to.
+/// `@MainActor` because the real implementation drives AppKit/Core Graphics
+/// event state that is only safe to touch from the main thread.
 ///
 /// `start` may be called again while already running, to switch to a new
 /// `remap` live (e.g. the Settings shortcut recorder) without an explicit
-/// `stop` first. `stop` fully releases the tap — the configured keys return
-/// to native macOS handling — used by the "Let BrightBoi own …" toggle.
+/// `stop` first, and to retry after a failed attempt (the permission it needs
+/// was granted since). `stop` fully releases everything: the configured keys
+/// return to native macOS handling, used by the "Let BrightBoi own …" toggle.
 @MainActor
 protocol KeyTapControlling {
     /// `onKeyPress` returns whether BrightBoi took the press. `false` lets
     /// the event through untouched, so macOS handles the key itself.
     func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Bool)
     func stop()
+
+    /// Whether everything the started remap needs is installed and working.
+    /// `false` after a `start` that could not install its event tap (the
+    /// Accessibility permission is missing, for instance), so the failure is
+    /// visible instead of the keys silently staying with macOS.
+    var isActive: Bool { get }
+
+    /// Another app that takes the brightness keys before BrightBoi sees
+    /// them, when one was noticed. Best effort.
+    var conflict: KeyTapConflict? { get }
+
+    /// Calls `onChange` whenever `conflict` changes.
+    func observeConflicts(_ onChange: @escaping () -> Void)
 }
 
 /// Reads the accessibility display options that change how the display's
@@ -290,17 +304,24 @@ protocol ThermalStateProviding {
     func startObserving(_ onChange: @escaping () -> Void)
 }
 
+/// What macOS knows about a permission BrightBoi asked for.
+enum PermissionAccess: Equatable {
+    case granted
+    /// The user turned it down, or never switched it on after a prompt.
+    case denied
+    /// macOS has no answer yet, so a request shows the system prompt.
+    case unknown
+}
+
 /// Reads current Accessibility/Input Monitoring permission status, and
 /// triggers macOS's own system prompt to request each one. Pulled out as its
-/// own seam so the Settings panel, `RealKeyTap` (status only), and onboarding
-/// (status + requesting) can all read/drive the same two permissions without
-/// duplicating the raw `AXIsProcessTrusted`/`IOHIDCheckAccess`/
-/// `AXIsProcessTrustedWithOptions`/`IOHIDRequestAccess` calls. Onboarding is
-/// the only caller of the two `request` methods — it replaced `RealKeyTap`'s
-/// previous blocking-alert-then-request flow entirely.
+/// own seam so `PermissionsModel` can read and request the same permissions
+/// the key tap depends on without duplicating the raw
+/// `AXIsProcessTrusted`/`IOHIDCheckAccess`/`AXIsProcessTrustedWithOptions`/
+/// `IOHIDRequestAccess` calls. The status reads are cheap and never prompt.
 protocol PermissionsChecking {
     func accessibilityGranted() -> Bool
-    func inputMonitoringGranted() -> Bool
+    func inputMonitoringAccess() -> PermissionAccess
     func requestAccessibility()
     func requestInputMonitoring()
 }

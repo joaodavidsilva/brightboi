@@ -14,12 +14,15 @@ struct BrightnessControllerTests {
         let loginItemService: FakeLoginItemService
         let persistence: FakeBrightnessPersistence
         let keyTap: FakeKeyTap
+        let permissionsChecker: FakePermissionsChecker
+        let permissions: PermissionsModel
         let powerSource: FakePowerSourceProvider
         let thermalState: FakeThermalStateProvider
         let bundleLocation: FakeBundleLocationProvider
         let displayAccessibility: FakeDisplayAccessibility
         let callLog: CallLog
         let scheduler: ManualPersistScheduler
+        let keyTapWatch: ManualPersistScheduler
     }
 
     private func makeFixture(
@@ -49,6 +52,7 @@ struct BrightnessControllerTests {
         stubbedIsAutoBrightnessEnabled: Bool? = true,
         storedAutoBrightnessWasEnabledOriginally: Bool? = nil,
         storedAutoBrightnessTakeoverEnabled: Bool? = nil,
+        stubbedKeyTapStarts: Bool = true,
         startController: Bool = true
     ) -> Fixture {
         let callLog = CallLog()
@@ -77,6 +81,9 @@ struct BrightnessControllerTests {
         persistence.storedAutoBrightnessWasEnabledOriginally = storedAutoBrightnessWasEnabledOriginally
         persistence.storedAutoBrightnessTakeoverEnabled = storedAutoBrightnessTakeoverEnabled
         let keyTap = FakeKeyTap()
+        keyTap.startSucceeds = stubbedKeyTapStarts
+        let permissionsChecker = FakePermissionsChecker()
+        let permissions = PermissionsModel(checker: permissionsChecker, openURL: { _ in })
         let powerSource = FakePowerSourceProvider()
         powerSource.stubbedIsOnBatteryPower = isOnBatteryPower
         powerSource.stubbedIsLowPowerModeEnabled = isLowPowerModeEnabled
@@ -89,6 +96,7 @@ struct BrightnessControllerTests {
         let displayAccessibility = FakeDisplayAccessibility()
         displayAccessibility.stubbedInvertsColors = invertsColors
         let scheduler = ManualPersistScheduler()
+        let keyTapWatch = ManualPersistScheduler()
 
         let controller = BrightnessController(
             displayBrightness: displayBrightness,
@@ -100,8 +108,10 @@ struct BrightnessControllerTests {
             thermalState: thermalState,
             bundleLocation: bundleLocation,
             displayAccessibility: displayAccessibility,
+            permissions: permissions,
             persistenceDebounceInterval: persistenceDebounceInterval,
-            schedule: scheduler.schedule
+            schedule: scheduler.schedule,
+            keyTapWatchSchedule: keyTapWatch.schedule
         )
         if startController {
             controller.start()
@@ -114,12 +124,15 @@ struct BrightnessControllerTests {
             loginItemService: loginItemService,
             persistence: persistence,
             keyTap: keyTap,
+            permissionsChecker: permissionsChecker,
+            permissions: permissions,
             powerSource: powerSource,
             thermalState: thermalState,
             bundleLocation: bundleLocation,
             displayAccessibility: displayAccessibility,
             callLog: callLog,
-            scheduler: scheduler
+            scheduler: scheduler,
+            keyTapWatch: keyTapWatch
         )
     }
 
@@ -1165,6 +1178,140 @@ struct BrightnessControllerTests {
         #expect(fixture.keyTap.startCallCount == 0)
         #expect(fixture.controller.currentState.keyRemapShortcut == newShortcut)
         #expect(fixture.persistence.storedKeyRemapShortcut == newShortcut)
+    }
+
+    // MARK: Key Remap: a tap that is down, and retrying it
+
+    @Test("a failing first start leaves the remap reported as not active")
+    func failingFirstStartIsReportedNotActive() {
+        let fixture = makeFixture(stubbedKeyTapStarts: false)
+        #expect(fixture.controller.currentState.keyRemapEnabled == true)
+        #expect(fixture.controller.keyRemapActive == false)
+    }
+
+    @Test("a working start is reported active, and turning Key Remap off clears it")
+    func workingStartIsActive() {
+        let fixture = makeFixture()
+        #expect(fixture.controller.keyRemapActive == true)
+        fixture.controller.setKeyRemapEnabled(false)
+        #expect(fixture.controller.keyRemapActive == false)
+    }
+
+    @Test("retryKeyTapIfNeeded starts the tap again with the persisted shortcut")
+    func retryStartsTapWithPersistedShortcut() {
+        let shortcut = KeyRemapShortcut(
+            raise: KeyCombo(modifiers: [.option, .shift], keyCode: 0x1E),
+            lower: .f1
+        )
+        let fixture = makeFixture(storedKeyRemapShortcut: shortcut, stubbedKeyTapStarts: false)
+        #expect(fixture.keyTap.startCallCount == 1)
+
+        fixture.keyTap.startSucceeds = true
+        fixture.controller.retryKeyTapIfNeeded()
+
+        #expect(fixture.keyTap.startCallCount == 2)
+        #expect(fixture.keyTap.lastStartedRemap == shortcut)
+        #expect(fixture.controller.keyRemapActive == true)
+    }
+
+    @Test("retryKeyTapIfNeeded does nothing while Key Remap is off")
+    func retryIsNoOpWhenDisabled() {
+        let fixture = makeFixture(storedKeyRemapEnabled: false)
+        fixture.controller.retryKeyTapIfNeeded()
+        #expect(fixture.keyTap.startCallCount == 0)
+        #expect(fixture.controller.keyRemapActive == false)
+    }
+
+    @Test("retryKeyTapIfNeeded does nothing while the tap is already running")
+    func retryIsNoOpWhenActive() {
+        let fixture = makeFixture()
+        fixture.controller.retryKeyTapIfNeeded()
+        #expect(fixture.keyTap.startCallCount == 1)
+    }
+
+    @Test("a permission granted later brings the tap up without a relaunch")
+    func grantedPermissionRetriesTap() {
+        let fixture = makeFixture(stubbedKeyTapStarts: false)
+        fixture.permissionsChecker.stubbedAccessibilityGranted = false
+        fixture.permissions.refresh()
+
+        fixture.keyTap.startSucceeds = true
+        fixture.permissionsChecker.stubbedAccessibilityGranted = true
+        fixture.permissions.refresh()
+
+        #expect(fixture.keyTap.startCallCount == 2)
+        #expect(fixture.controller.keyRemapActive == true)
+    }
+
+    @Test("while the tap is down, a short poll re-reads the permissions until it is up")
+    func pollWhileTapIsDown() {
+        let fixture = makeFixture(stubbedKeyTapStarts: false)
+        fixture.permissionsChecker.stubbedAccessibilityGranted = false
+        fixture.permissions.refresh()
+        let queriesBefore = fixture.permissionsChecker.accessibilityQueryCount
+
+        fixture.keyTapWatch.fire()
+        #expect(fixture.permissionsChecker.accessibilityQueryCount > queriesBefore)
+        // Nothing was granted, so the tap was not retried by the poll.
+        #expect(fixture.keyTap.startCallCount == 1)
+
+        fixture.keyTap.startSucceeds = true
+        fixture.permissionsChecker.stubbedAccessibilityGranted = true
+        fixture.keyTapWatch.fire()
+        #expect(fixture.keyTap.startCallCount == 2)
+        #expect(fixture.controller.keyRemapActive == true)
+    }
+
+    @Test("with Accessibility already granted, the poll retries a bounded number of times, then stops")
+    func pollRetriesWhenAlreadyGranted() {
+        let fixture = makeFixture(stubbedKeyTapStarts: false)
+        #expect(fixture.keyTap.startCallCount == 1)
+
+        fixture.keyTapWatch.fire()
+        fixture.keyTapWatch.fire()
+        #expect(fixture.keyTap.startCallCount == 3)
+
+        fixture.keyTap.startSucceeds = true
+        fixture.keyTapWatch.fire()
+        #expect(fixture.keyTap.startCallCount == 4)
+        #expect(fixture.controller.keyRemapActive == true)
+        #expect(!fixture.keyTapWatch.hasPending)
+    }
+
+    @Test("when every poll attempt fails the poll gives up instead of running forever")
+    func pollGivesUp() {
+        let fixture = makeFixture(stubbedKeyTapStarts: false)
+        for _ in 0..<3 { fixture.keyTapWatch.fire() }
+        #expect(fixture.keyTap.startCallCount == 4)
+        #expect(!fixture.keyTapWatch.hasPending)
+        #expect(fixture.controller.keyRemapActive == false)
+    }
+
+    @Test("no poll is scheduled while the tap is running or Key Remap is off")
+    func noPollWhenActiveOrOff() {
+        let active = makeFixture()
+        let off = makeFixture(storedKeyRemapEnabled: false)
+        #expect(!active.keyTapWatch.hasPending)
+        #expect(!off.keyTapWatch.hasPending)
+    }
+
+    @Test("the poll stops by itself once the tap is up")
+    func pollStopsOnceActive() {
+        let fixture = makeFixture(stubbedKeyTapStarts: false)
+        fixture.keyTap.startSucceeds = true
+        fixture.controller.retryKeyTapIfNeeded()
+        fixture.keyTapWatch.fire()
+        #expect(!fixture.keyTapWatch.hasPending)
+    }
+
+    @Test("a conflicting app reported by the tap is exposed to Settings")
+    func conflictIsExposed() {
+        let fixture = makeFixture()
+        #expect(fixture.controller.keyTapConflict == nil)
+        fixture.keyTap.conflict = KeyTapConflict(appName: "MonitorControl")
+        #expect(fixture.controller.keyTapConflict == KeyTapConflict(appName: "MonitorControl"))
+        fixture.keyTap.conflict = nil
+        #expect(fixture.controller.keyTapConflict == nil)
     }
 
     // MARK: Battery advisory

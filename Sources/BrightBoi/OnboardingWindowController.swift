@@ -27,8 +27,8 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
         // `.closable` is deliberate even though closing this way doesn't
         // route through `OnboardingModel.complete()` — only finishing all
-        // three steps or tapping "Skip" persists `hasCompletedOnboarding`
-        // (per the spec), so dismissing via the native close button leaves
+        // three steps or tapping "Skip" persists `hasCompletedOnboarding`,
+        // so dismissing via the native close button leaves
         // onboarding showing again next launch rather than silently
         // counting as "shown".
         let window = NSWindow(
@@ -51,6 +51,13 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         model.onFinished = { [weak self] in
             self?.window.close()
         }
+    }
+
+    /// Brings the window back to the front, for when a permission was
+    /// granted in System Settings and left this window behind it.
+    func bringToFront() {
+        window.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func windowWillClose(_ notification: Notification) {

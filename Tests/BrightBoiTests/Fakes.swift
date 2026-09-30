@@ -217,16 +217,34 @@ final class FakeKeyTap: KeyTapControlling {
     private(set) var stopCallCount = 0
     private(set) var lastStartedRemap: KeyRemapShortcut?
     private var onKeyPress: ((BrightnessController.KeyPress) -> Bool)?
+    private var conflictObservers: [() -> Void] = []
+
+    /// Whether a `start` succeeds: `false` stands in for the event tap
+    /// failing to install because a permission is missing.
+    var startSucceeds = true
+    private var active = false
+
+    var conflict: KeyTapConflict? {
+        didSet { for observer in conflictObservers { observer() } }
+    }
+
+    var isActive: Bool { active }
 
     func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Bool) {
         startCallCount += 1
         lastStartedRemap = remap
         self.onKeyPress = onKeyPress
+        active = startSucceeds
     }
 
     func stop() {
         stopCallCount += 1
         onKeyPress = nil
+        active = false
+    }
+
+    func observeConflicts(_ onChange: @escaping () -> Void) {
+        conflictObservers.append(onChange)
     }
 
     /// Simulates a real key tap reporting a press, exercising the same
@@ -310,7 +328,7 @@ final class FakeDisplayAccessibility: DisplayAccessibilityProviding {
 
 final class FakePermissionsChecker: PermissionsChecking {
     var stubbedAccessibilityGranted = true
-    var stubbedInputMonitoringGranted = true
+    var stubbedInputMonitoringAccess: PermissionAccess = .granted
     private(set) var accessibilityQueryCount = 0
     private(set) var inputMonitoringQueryCount = 0
     private(set) var requestAccessibilityCallCount = 0
@@ -321,15 +339,14 @@ final class FakePermissionsChecker: PermissionsChecking {
         return stubbedAccessibilityGranted
     }
 
-    func inputMonitoringGranted() -> Bool {
+    func inputMonitoringAccess() -> PermissionAccess {
         inputMonitoringQueryCount += 1
-        return stubbedInputMonitoringGranted
+        return stubbedInputMonitoringAccess
     }
 
-    /// Records the call only — doesn't flip `stubbed...Granted`, since a real
+    /// Records the call only — doesn't flip the stubbed status, since a real
     /// system prompt's outcome is asynchronous and user-driven. Tests that
-    /// need a post-request "now granted" status set `stubbed...Granted`
-    /// directly before reading it.
+    /// need a later "now granted" status set the stub directly.
     func requestAccessibility() {
         requestAccessibilityCallCount += 1
     }
@@ -350,6 +367,9 @@ final class FakePermissionsChecker: PermissionsChecking {
 final class ManualPersistScheduler {
     private(set) var lastDelay: TimeInterval?
     private var pendingWork: (() -> Void)?
+
+    /// Whether a closure is waiting to fire.
+    var hasPending: Bool { pendingWork != nil }
 
     func schedule(_ delay: TimeInterval, _ work: @escaping @Sendable () -> Void) {
         lastDelay = delay

@@ -34,9 +34,8 @@ struct KeyCombo: Equatable, Codable {
     var keyCode: Int64
 
     // Standard virtual keycodes for the F1/F2 function keys (Carbon
-    // HIToolbox constants `kVK_F1`/`kVK_F2`) — the same values `RealKeyTap`
-    // hardcoded before this ticket, now the single source of truth both the
-    // tap and the shortcut recorder read from.
+    // HIToolbox constants `kVK_F1`/`kVK_F2`), the single source of truth for
+    // the key tap and the shortcut recorder.
     static let f1VirtualKeyCode: Int64 = 0x7A
     static let f2VirtualKeyCode: Int64 = 0x78
 
@@ -88,11 +87,10 @@ struct KeyCombo: Equatable, Codable {
 }
 
 extension KeyCombo.Modifiers {
-    /// The single conversion from `NSEvent.ModifierFlags` to `KeyCombo`'s own
-    /// modifier set — used both by `RealKeyTap` (via `NSEvent(cgEvent:)`, the
-    /// same bridge it already uses for the media-key path) and the Settings
-    /// shortcut recorder, so there's one place that knows which raw flags
-    /// count as a "modifier" for remap purposes.
+    /// The conversion from `NSEvent.ModifierFlags` to `KeyCombo`'s own
+    /// modifier set, used by the Settings shortcut recorder. The key tap reads
+    /// `CGEventFlags` instead (see `init(cgEventFlags:)`); both count the same
+    /// four keys as modifiers for remap purposes.
     init(nsEventModifierFlags flags: NSEvent.ModifierFlags) {
         var modifiers: KeyCombo.Modifiers = []
         if flags.contains(.command) { modifiers.insert(.command) }

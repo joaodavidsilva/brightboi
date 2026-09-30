@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The three-step first-run window (mockups 1e/2e): welcome, permission
-/// requests with a skip escape hatch, confirmation. Hosted in
+/// The three-step first-run window: welcome, the permission request with a
+/// skip escape hatch, confirmation. Hosted in
 /// `OnboardingWindowController`'s `NSWindow` — this view only renders
 /// whatever `OnboardingModel.step` currently is and forwards button taps to
 /// the model, which owns all the flow/persistence logic.
@@ -90,33 +90,24 @@ private struct PermissionsStepView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Two permissions, then I'll be quiet.")
+            Text("One permission, then I'll be quiet.")
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(palette.primaryText)
 
-            Text("These are only for the F1/F2 keys. macOS will ask you twice — that's the system, not me.")
+            Text("This is only for the F1/F2 keys. The slider works without it.")
                 .font(.system(size: 12.5))
                 .foregroundStyle(palette.secondaryText)
 
             VStack(spacing: 0) {
                 permissionRow(
                     title: "Accessibility",
-                    subtitle: "So the keypress can be intercepted",
+                    subtitle: "So BrightBoi can take over the brightness keys",
                     granted: model.accessibilityGranted,
                     onGrant: model.requestAccessibility
                 )
-                Rectangle()
-                    .fill(palette.divider)
-                    .frame(height: 0.5)
-                    .padding(.leading, 12)
-                permissionRow(
-                    title: "Input Monitoring",
-                    subtitle: "So the media-key form is seen too",
-                    granted: model.inputMonitoringGranted,
-                    onGrant: model.requestInputMonitoring
-                )
             }
             .background(palette.rowBackground, in: RoundedRectangle(cornerRadius: 9))
+            .animation(.default, value: model.accessibilityGranted)
 
             PrimaryButton(title: "Continue", palette: palette, action: model.advance)
 
@@ -129,6 +120,15 @@ private struct PermissionsStepView: View {
                 .background(palette.skipBackground, in: RoundedRectangle(cornerRadius: 7))
         }
         .padding(.horizontal, 28)
+        // The grant happens in System Settings, where BrightBoi is not the
+        // active app, so nothing notifies it: poll until the row flips.
+        // SwiftUI cancels the task when the step changes or the window closes.
+        .task {
+            while !Task.isCancelled && !model.accessibilityGranted {
+                try? await Task.sleep(for: .seconds(1))
+                model.refreshPermissions()
+            }
+        }
     }
 
     private func permissionRow(title: String, subtitle: String, granted: Bool, onGrant: @escaping () -> Void) -> some View {

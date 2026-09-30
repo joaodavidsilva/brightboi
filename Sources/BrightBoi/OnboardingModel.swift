@@ -1,11 +1,10 @@
 import Observation
 
-/// Drives the first-run onboarding flow (mockups 1e/2e): welcome, permission
-/// requests, confirmation — shown at most once, ever, replacing
-/// `RealKeyTap`'s previous blocking `NSAlert`. The persisted
+/// Drives the first-run onboarding flow: welcome, permission request,
+/// confirmation, shown at most once, ever. The persisted
 /// `hasCompletedOnboarding` flag is set on completing all three steps *or*
-/// skipping from the permissions step, matching the spec's "never shown
-/// again after the very first run regardless of which path" requirement.
+/// skipping from the permissions step, so it is never shown again after the
+/// very first run, whichever path was taken.
 @Observable
 @MainActor
 final class OnboardingModel {
@@ -16,8 +15,10 @@ final class OnboardingModel {
     }
 
     private(set) var step: Step = .welcome
-    private(set) var accessibilityGranted: Bool
-    private(set) var inputMonitoringGranted: Bool
+    /// The shared permission status, also read by Settings and the key tap.
+    let permissions: PermissionsModel
+
+    var accessibilityGranted: Bool { permissions.accessibilityGranted }
 
     /// Wired by whatever presents this model (the onboarding window
     /// controller) to dismiss itself once onboarding is done — the model has
@@ -27,18 +28,15 @@ final class OnboardingModel {
     var onFinished: () -> Void = {}
 
     private let persistence: BrightnessPersisting
-    private let permissionsChecker: PermissionsChecking
     /// Internal bookkeeping only, never read by a view — not
     /// observation-tracked, matching `BrightnessController`'s own
     /// non-UI-facing properties.
     @ObservationIgnored
     private var hasFinished = false
 
-    init(persistence: BrightnessPersisting, permissionsChecker: PermissionsChecking) {
+    init(persistence: BrightnessPersisting, permissions: PermissionsModel) {
         self.persistence = persistence
-        self.permissionsChecker = permissionsChecker
-        self.accessibilityGranted = permissionsChecker.accessibilityGranted()
-        self.inputMonitoringGranted = permissionsChecker.inputMonitoringGranted()
+        self.permissions = permissions
     }
 
     /// `false` once `hasCompletedOnboarding` has been persisted by any path
@@ -59,20 +57,23 @@ final class OnboardingModel {
     }
 
     /// The permissions step's escape hatch — ends onboarding immediately
-    /// without requesting anything further, per the spec's "skip and still
-    /// use the slider" user story.
+    /// without requesting anything further, so the slider stays usable
+    /// without any permission.
     func skip() {
         complete()
     }
 
+    /// The Grant button: shows macOS's prompt the first time, and opens the
+    /// Accessibility pane after that (see `PermissionsModel.requestOrOpenSettings`).
     func requestAccessibility() {
-        permissionsChecker.requestAccessibility()
-        accessibilityGranted = permissionsChecker.accessibilityGranted()
+        permissions.requestOrOpenSettings(.accessibility)
     }
 
-    func requestInputMonitoring() {
-        permissionsChecker.requestInputMonitoring()
-        inputMonitoringGranted = permissionsChecker.inputMonitoringGranted()
+    /// Re-reads the permission. The grant happens in System Settings after
+    /// the prompt call returns, so the permissions step calls this on a short
+    /// poll while the row is still waiting.
+    func refreshPermissions() {
+        permissions.refresh()
     }
 
     private func complete() {

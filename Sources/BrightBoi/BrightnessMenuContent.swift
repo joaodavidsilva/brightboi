@@ -56,6 +56,7 @@ struct BrightnessMenuContent: View {
         .frame(width: 280)
         .onAppear {
             controller.syncFromDisplay()
+            controller.permissionsMayHaveChanged()
         }
         // `MenuBarExtra(.window)` keeps this content's hosting view alive
         // between openings, so `onAppear` alone isn't guaranteed to fire on
@@ -64,6 +65,7 @@ struct BrightnessMenuContent: View {
         // `onAppear` might miss.
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             controller.syncFromDisplay()
+            controller.permissionsMayHaveChanged()
         }
     }
 
@@ -158,7 +160,8 @@ struct BrightnessMenuContent: View {
     /// Whether anything below the quick-set row has something to say. The
     /// HDR footnote counts: it is shown only while Boost is actually on.
     private func hasAdvisories(state: BrightnessController.State) -> Bool {
-        state.boostBlockedByOtherApp
+        isKeyRemapDown(state: state)
+            || state.boostBlockedByOtherApp
             || state.isBoostPaused
             || state.isBoosted
             || !state.builtInDisplayAvailable
@@ -166,6 +169,11 @@ struct BrightnessMenuContent: View {
             || controller.batteryAdvisoryVisible
             || controller.thermalAdvisory != nil
             || controller.isLowPowerModeAdvisoryVisible
+    }
+
+    /// Key Remap is on but its tap is not running.
+    private func isKeyRemapDown(state: BrightnessController.State) -> Bool {
+        state.keyRemapEnabled && !controller.keyRemapActive
     }
 
     /// The Boost-blocked banner reports a real refusal (see `BoostEngagement`'s
@@ -176,6 +184,13 @@ struct BrightnessMenuContent: View {
     /// ever appears at once.
     private func advisories(state: BrightnessController.State, palette: Palette) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            if isKeyRemapDown(state: state) {
+                AdvisoryBanner(
+                    icon: "keyboard",
+                    text: "Key Remap isn't active, so the brightness keys stay with macOS. Open Settings to fix it.",
+                    palette: palette
+                )
+            }
             if !state.builtInDisplayAvailable {
                 AdvisoryBanner(
                     icon: "display",

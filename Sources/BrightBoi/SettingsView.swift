@@ -2,19 +2,15 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-/// BrightBoi's Settings window (mockups 1d/2d): Boost Ceiling, Key Remap
+/// BrightBoi's Settings window: Boost Ceiling, Key Remap
 /// shortcut + on/off toggle, and a Permissions panel. Reuses
 /// `BrightnessMenuContent.Palette` for appearance-aware colors — no new
-/// preference, same `colorScheme`-driven approach as the popover (ticket 01).
+/// preference, same `colorScheme`-driven approach as the popover.
 struct SettingsView: View {
     var controller: BrightnessController
-    var permissions: PermissionsSnapshot
+    var permissions: PermissionsModel
 
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.openURL) private var openURL
-
-    private static let accessibilityPaneURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-    private static let inputMonitoringPaneURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!
 
     var body: some View {
         let state = controller.currentState
@@ -27,7 +23,7 @@ struct SettingsView: View {
                 boostCeilingSection(state: state, palette: palette)
             }
 
-            permissionsSection(palette: palette)
+            permissionsSection(state: state, palette: palette)
 
             footer(palette: palette)
         }
@@ -36,6 +32,7 @@ struct SettingsView: View {
         .onAppear {
             controller.refreshLaunchAtLoginStatus()
             controller.syncFromDisplay()
+            controller.permissionsMayHaveChanged()
         }
         // SwiftUI doesn't reliably re-run `onAppear` when Settings is
         // reopened, and System Settings' Login Items list can change
@@ -45,6 +42,7 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             controller.refreshLaunchAtLoginStatus()
             controller.syncFromDisplay()
+            controller.permissionsMayHaveChanged()
         }
     }
 
@@ -103,6 +101,7 @@ struct SettingsView: View {
 
                 launchAtLoginNotice(state: state, palette: palette)
                 autoBrightnessUnavailableNotice(palette: palette)
+                keyRemapNotice(state: state, palette: palette)
             }
         }
     }
@@ -144,6 +143,50 @@ struct SettingsView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(palette.secondaryText)
         }
+    }
+
+    /// Says so when Key Remap is on but not working, with the way to fix it,
+    /// so a dead tap is never silent; or names another app that takes the
+    /// brightness keys first.
+    @ViewBuilder
+    private func keyRemapNotice(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
+        if state.keyRemapEnabled && !controller.keyRemapActive {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Key Remap isn't active, so macOS still handles the brightness keys.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                if !permissions.accessibilityGranted {
+                    actionButton("Turn on…", palette: palette) { permissions.requestOrOpenSettings(.accessibility) }
+                } else if permissions.inputMonitoringGranted {
+                    actionButton("Relaunch BrightBoi", palette: palette) { AppRelauncher.relaunch() }
+                } else {
+                    actionButton("Try again", palette: palette) { controller.permissionsMayHaveChanged() }
+                }
+            }
+        } else if state.keyRemapEnabled, let conflict = controller.keyTapConflict {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(conflict.message)
+                    .font(.system(size: 11))
+                    .foregroundStyle(palette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func actionButton(_ title: String, palette: BrightnessMenuContent.Palette, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(palette.rowText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(palette.quickSetMaxBackground, in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func remapToggleTitle(_ shortcut: KeyRemapShortcut) -> String {
@@ -201,24 +244,34 @@ struct SettingsView: View {
 
     // MARK: - Permissions
 
-    private func permissionsSection(palette: BrightnessMenuContent.Palette) -> some View {
+    private func permissionsSection(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
         section(title: "Permissions", palette: palette) {
             VStack(alignment: .leading, spacing: 4) {
                 VStack(spacing: 0) {
-                    permissionRow(title: "Accessibility", granted: permissions.accessibilityGranted, paneURL: Self.accessibilityPaneURL, palette: palette)
-                    rowDivider(palette: palette)
-                    permissionRow(title: "Input Monitoring", granted: permissions.inputMonitoringGranted, paneURL: Self.inputMonitoringPaneURL, palette: palette)
+                    permissionRow(title: "Accessibility", granted: permissions.accessibilityGranted, palette: palette) {
+                        permissions.requestOrOpenSettings(.accessibility)
+                    }
+                    // Whether this Mac needs Input Monitoring for the key tap
+                    // is only known when the tap fails with Accessibility
+                    // already granted, so the row appears only then.
+                    if permissions.needsInputMonitoring(keyRemapEnabled: state.keyRemapEnabled, keyTapActive: controller.keyRemapActive) {
+                        rowDivider(palette: palette)
+                        permissionRow(title: "Input Monitoring", granted: permissions.inputMonitoringGranted, palette: palette) {
+                            permissions.requestOrOpenSettings(.inputMonitoring)
+                        }
+                    }
                 }
                 .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
+                .animation(.default, value: permissions.accessibilityGranted)
 
-                Text("Without both, the slider still works — the configured keys just go back to macOS's native handling.")
+                Text("Needed only for the F1/F2 keys. The slider and custom shortcuts work without it.")
                     .font(.system(size: 11))
                     .foregroundStyle(palette.secondaryText)
             }
         }
     }
 
-    private func permissionRow(title: String, granted: Bool, paneURL: URL, palette: BrightnessMenuContent.Palette) -> some View {
+    private func permissionRow(title: String, granted: Bool, palette: BrightnessMenuContent.Palette, onGrant: @escaping () -> Void) -> some View {
         HStack {
             Text(title)
                 .font(.system(size: 13))
@@ -232,15 +285,7 @@ struct SettingsView: View {
                     .foregroundStyle(palette.secondaryText)
             }
             if !granted {
-                Button("Open System Settings") {
-                    openURL(paneURL)
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(palette.rowText)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(palette.quickSetMaxBackground, in: RoundedRectangle(cornerRadius: 6))
+                actionButton("Turn on…", palette: palette, action: onGrant)
             }
         }
         .padding(.horizontal, 13)

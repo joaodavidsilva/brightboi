@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import BrightBoi
 
@@ -9,13 +10,20 @@ struct OnboardingModelTests {
         let model: OnboardingModel
         let persistence: FakeBrightnessPersistence
         let permissionsChecker: FakePermissionsChecker
+        let openedURLs: OpenedURLs
+    }
+
+    private final class OpenedURLs {
+        var urls: [URL] = []
     }
 
     private func makeFixture() -> Fixture {
         let persistence = FakeBrightnessPersistence()
         let permissionsChecker = FakePermissionsChecker()
-        let model = OnboardingModel(persistence: persistence, permissionsChecker: permissionsChecker)
-        return Fixture(model: model, persistence: persistence, permissionsChecker: permissionsChecker)
+        let openedURLs = OpenedURLs()
+        let permissions = PermissionsModel(checker: permissionsChecker, openURL: { openedURLs.urls.append($0) })
+        let model = OnboardingModel(persistence: persistence, permissions: permissions)
+        return Fixture(model: model, persistence: persistence, permissionsChecker: permissionsChecker, openedURLs: openedURLs)
     }
 
     // MARK: shouldShow
@@ -92,47 +100,56 @@ struct OnboardingModelTests {
         #expect(fixture.persistence.saveHasCompletedOnboardingCallCount == 1)
     }
 
-    // MARK: Permission requests — replaces RealKeyTap's old alert path
+    // MARK: Permission requests
 
     @Test("requesting Accessibility calls the permissions checker, not any alert")
     func requestsAccessibilityThroughChecker() {
         let fixture = makeFixture()
+        fixture.permissionsChecker.stubbedAccessibilityGranted = false
+        fixture.model.refreshPermissions()
+
         fixture.model.requestAccessibility()
         #expect(fixture.permissionsChecker.requestAccessibilityCallCount == 1)
+        #expect(fixture.openedURLs.urls.isEmpty)
     }
 
-    @Test("requesting Input Monitoring calls the permissions checker, not any alert")
-    func requestsInputMonitoringThroughChecker() {
-        let fixture = makeFixture()
-        fixture.model.requestInputMonitoring()
-        #expect(fixture.permissionsChecker.requestInputMonitoringCallCount == 1)
-    }
-
-    @Test("reads granted status once at construction, matching the checker's status")
+    @Test("reads granted status at construction, matching the checker's status")
     func readsInitialGrantedStatus() {
         let persistence = FakeBrightnessPersistence()
         let permissionsChecker = FakePermissionsChecker()
         permissionsChecker.stubbedAccessibilityGranted = false
-        permissionsChecker.stubbedInputMonitoringGranted = true
 
-        let model = OnboardingModel(persistence: persistence, permissionsChecker: permissionsChecker)
+        let model = OnboardingModel(persistence: persistence, permissions: PermissionsModel(checker: permissionsChecker))
 
         #expect(model.accessibilityGranted == false)
-        #expect(model.inputMonitoringGranted == true)
         #expect(permissionsChecker.accessibilityQueryCount == 1)
-        #expect(permissionsChecker.inputMonitoringQueryCount == 1)
     }
 
-    @Test("requesting a permission refreshes its granted status from the checker")
-    func requestingRefreshesGrantedStatus() {
+    @Test("refreshPermissions picks up a grant made in System Settings, without a second request")
+    func refreshPicksUpGrantWithoutSecondRequest() {
         let fixture = makeFixture()
         fixture.permissionsChecker.stubbedAccessibilityGranted = false
-
-        fixture.model.requestAccessibility()
+        fixture.model.refreshPermissions()
         #expect(fixture.model.accessibilityGranted == false)
 
-        fixture.permissionsChecker.stubbedAccessibilityGranted = true
         fixture.model.requestAccessibility()
+        fixture.permissionsChecker.stubbedAccessibilityGranted = true
+        fixture.model.refreshPermissions()
+
         #expect(fixture.model.accessibilityGranted == true)
+        #expect(fixture.permissionsChecker.requestAccessibilityCallCount == 1)
+    }
+
+    @Test("a second Grant click while still untrusted opens the Accessibility pane instead of prompting again")
+    func secondGrantOpensPane() {
+        let fixture = makeFixture()
+        fixture.permissionsChecker.stubbedAccessibilityGranted = false
+        fixture.model.refreshPermissions()
+
+        fixture.model.requestAccessibility()
+        fixture.model.requestAccessibility()
+
+        #expect(fixture.permissionsChecker.requestAccessibilityCallCount == 1)
+        #expect(fixture.openedURLs.urls == [PermissionsModel.accessibilityPaneURL])
     }
 }
