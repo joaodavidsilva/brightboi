@@ -175,7 +175,20 @@ struct PopoverAccessibilityTests {
         #expect(!proxies.contains { host.window.firstResponder === $0 }, "opening focuses nothing")
     }
 
-    @Test("with the slider focused, the arrow keys step 5% through the controller, without the HUD, and never reach 0%")
+    /// SwiftUI on macOS 15 delivers `.onKeyPress` only while the app is truly
+    /// active, and a test process must never activate itself (that would take
+    /// keyboard focus from whoever is using the machine). On macOS 26 the key
+    /// events reach the slider without activation. On macOS 15 the same arrow
+    /// keys are a check to make by hand on the real popover (see the popover
+    /// hardware checklist); the slider's VoiceOver increment and decrement,
+    /// which do not depend on key delivery, are tested on every version.
+    @Test(
+        "with the slider focused, the arrow keys step 5% through the controller, without the HUD, and never reach 0%",
+        .enabled(
+            if: ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26,
+            "SwiftUI key presses need an active app on macOS 15, which a test must not force"
+        )
+    )
     func arrowKeysAdjustTheSlider() throws {
         defer { OffscreenWindows.closeAll() }
         let rig = ControllerRig(storedPercentage: 150)
