@@ -14,6 +14,8 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let controller: BrightnessController
     let permissions: PermissionsModel
+    /// Looks for a newer release, only once the user allows it or asks.
+    let updates = UpdateChecker.live()
 
     private let persistence = RealBrightnessPersistence()
     private let hud = BrightnessHUDController()
@@ -79,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hud.present(state: state)
         }
         controller.start()
+        updates.start()
         permissions.startObservingSystemNotifications()
         // The onboarding window ends up behind System Settings while the user
         // grants access there; bring it back once the grant is seen.

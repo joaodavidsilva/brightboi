@@ -192,8 +192,8 @@ struct PopoverTests {
 
     // MARK: Advisories wrap instead of truncating
 
-    private func sizes(of controller: BrightnessController) -> (minimum: CGFloat, ideal: CGFloat) {
-        let hosting = NSHostingController(rootView: BrightnessMenuContent(controller: controller))
+    private func sizes(of controller: BrightnessController, updates: UpdateChecker? = nil) -> (minimum: CGFloat, ideal: CGFloat) {
+        let hosting = NSHostingController(rootView: BrightnessMenuContent(controller: controller, updates: updates))
         let minimum = hosting.sizeThatFits(in: .zero).height
         let ideal = hosting.sizeThatFits(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)).height
         return (minimum, ideal)
@@ -212,6 +212,34 @@ struct PopoverTests {
         #expect(ideal < 700)
         let quiet = sizes(of: makeController(percentage: 60)).ideal
         #expect(ideal > quiet)
+    }
+
+    // MARK: Update rows
+
+    private struct NoReleaseFetcher: ReleaseFetching {
+        func fetchLatestRelease() async throws -> LatestRelease? { nil }
+    }
+
+    private final class InMemoryUpdateStore: UpdateCheckPersisting {
+        var automaticChecksEnabled: Bool?
+        var lastCheckDate: Date?
+        var launchCount = 0
+    }
+
+    @Test func updateQuestionAddsARowThatWrapsAndGoesOnceAnswered() {
+        let controller = makeController(percentage: 60)
+        let store = InMemoryUpdateStore()
+        store.launchCount = 2
+        let updates = UpdateChecker(currentVersion: "1.1.0", fetcher: NoReleaseFetcher(), store: store)
+        #expect(updates.shouldOfferConsent)
+
+        let plain = sizes(of: controller)
+        let asking = sizes(of: controller, updates: updates)
+        #expect(asking.ideal > plain.ideal)
+        #expect(asking.minimum == asking.ideal)
+
+        updates.setAutomaticChecksEnabled(false)
+        #expect(sizes(of: controller, updates: updates).ideal == plain.ideal)
     }
 
     // MARK: Fixture

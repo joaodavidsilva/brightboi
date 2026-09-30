@@ -13,6 +13,8 @@ struct SettingsView: View {
     var permissions: PermissionsModel
     /// Opens the donation window. It ignores the launch-time throttle.
     var onShowSupport: () -> Void = {}
+    /// The update check. `nil` where there is none (previews and tests).
+    var updates: UpdateChecker?
 
     @State private var recorder: ShortcutRecorder
 
@@ -20,11 +22,13 @@ struct SettingsView: View {
         controller: BrightnessController,
         permissions: PermissionsModel,
         recorder: ShortcutRecorder? = nil,
-        onShowSupport: @escaping () -> Void = {}
+        onShowSupport: @escaping () -> Void = {},
+        updates: UpdateChecker? = nil
     ) {
         self.controller = controller
         self.permissions = permissions
         self.onShowSupport = onShowSupport
+        self.updates = updates
         _recorder = State(initialValue: recorder ?? ShortcutRecorder(controller: controller))
     }
 
@@ -112,6 +116,17 @@ struct SettingsView: View {
 
             if state.keyRemapShortcut != .defaultShortcut {
                 resetShortcutRow()
+            }
+
+            if let updates {
+                toggleRow(
+                    title: "Check for updates automatically",
+                    subtitle: "Contacts github.com once a day. Nothing is sent until you turn this on.",
+                    isOn: Binding(
+                        get: { updates.automaticChecksEnabled == true },
+                        set: { updates.setAutomaticChecksEnabled($0) }
+                    )
+                )
             }
         } header: {
             sectionHeader("General")
@@ -328,21 +343,52 @@ struct SettingsView: View {
     // MARK: - Footer
 
     /// "BrightBoi 1.1.0 (3) · built-in display only", read from the bundle's
-    /// Info.plist. A build without one (`swift run`) reads "BrightBoi dev".
+    /// Info.plist. A build without a version (`swift run`, tests) reads
+    /// "BrightBoi · built-in display only".
     nonisolated static func versionLabel(info: [String: Any]?) -> String {
-        let version = (info?["CFBundleShortVersionString"] as? String) ?? "dev"
-        var label = "BrightBoi \(version)"
-        if let build = info?["CFBundleVersion"] as? String, !build.isEmpty {
-            label += " (\(build))"
+        var label = "BrightBoi"
+        if let version = info?["CFBundleShortVersionString"] as? String, !version.isEmpty {
+            label += " \(version)"
+            if let build = info?["CFBundleVersion"] as? String, !build.isEmpty {
+                label += " (\(build))"
+            }
         }
         return label + " · built-in display only"
     }
 
+    /// The line under the version after a check the user asked for, or an
+    /// update found by any check; `nil` when there is nothing to say.
+    @MainActor
+    static func updateStatusText(for updates: UpdateChecker) -> String? {
+        if let update = updates.availableUpdate { return UpdateChecker.availableText(for: update) }
+        switch updates.manualStatus {
+        case .idle: return nil
+        case .checking: return UpdateChecker.checkingText
+        case .upToDate: return UpdateChecker.upToDateText
+        case .failed: return UpdateChecker.failureText
+        }
+    }
+
     private func footer() -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(Self.versionLabel(info: Bundle.main.infoDictionary))
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(Self.versionLabel(info: Bundle.main.infoDictionary))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if let updates {
+                        Button("Check for Updates…") {
+                            Task { await updates.checkNow() }
+                        }
+                        .controlSize(.small)
+                        .disabled(updates.manualStatus == .checking)
+                    }
+                }
+                if let updates, let status = Self.updateStatusText(for: updates) {
+                    updateStatusRow(status, updates: updates)
+                }
+            }
             HStack {
                 Button("Support BrightBoi…", action: onShowSupport)
                 Spacer()
@@ -352,6 +398,21 @@ struct SettingsView: View {
             }
         }
         .padding(EdgeInsets(top: 4, leading: 20, bottom: 16, trailing: 20))
+    }
+
+    /// The result of an update check. Only a found update is a link; a
+    /// failure or "up to date" is just a line of text.
+    private func updateStatusRow(_ text: String, updates: UpdateChecker) -> some View {
+        HStack(spacing: 8) {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            if updates.availableUpdate != nil {
+                Button("View release") { updates.openAvailableUpdate() }
+                    .controlSize(.small)
+                    .accessibilityHint("Opens the download page in your browser")
+            }
+        }
     }
 
     // MARK: - Shared row building blocks

@@ -11,6 +11,8 @@ import SwiftUI
 /// boundary cut. Colours, type sizes and radii come from `Theme`.
 struct BrightnessMenuContent: View {
     var controller: BrightnessController
+    /// The update check. `nil` where there is none (previews and tests).
+    var updates: UpdateChecker?
 
     @Environment(\.openSettings) private var openSettings
 
@@ -48,6 +50,10 @@ struct BrightnessMenuContent: View {
 
             if hasAdvisories(state: state) {
                 advisories(state: state)
+            }
+
+            if let updates {
+                updateRows(updates)
             }
 
             ThemeDivider()
@@ -296,6 +302,55 @@ struct BrightnessMenuContent: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// An update that was found, or the one-time question about checking
+    /// automatically. Both only inform, so they use the neutral banner style,
+    /// never the amber one.
+    @ViewBuilder
+    private func updateRows(_ updates: UpdateChecker) -> some View {
+        if let update = updates.availableUpdate {
+            Button {
+                updates.openAvailableUpdate()
+            } label: {
+                AdvisoryBanner(
+                    style: .info,
+                    icon: "arrow.down.circle",
+                    text: UpdateChecker.availableText(for: update)
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the download page in your browser")
+            .accessibilityAddTraits(.isLink)
+        }
+        if updates.shouldOfferConsent {
+            VStack(alignment: .leading, spacing: 6) {
+                AdvisoryBanner(
+                    style: .info,
+                    icon: "arrow.triangle.2.circlepath",
+                    text: UpdateChecker.consentText
+                )
+                HStack(spacing: 6) {
+                    consentButton(title: "Yes", enable: true, updates: updates)
+                    consentButton(title: "No", enable: false, updates: updates)
+                }
+            }
+        }
+    }
+
+    private func consentButton(title: String, enable: Bool, updates: UpdateChecker) -> some View {
+        Button(title) {
+            updates.setAutomaticChecksEnabled(enable)
+        }
+        .buttonStyle(PillButtonStyle(
+            fill: .fillGrouped,
+            foreground: .textPrimary,
+            cornerRadius: Theme.Radius.button,
+            horizontalPadding: 0,
+            verticalPadding: 6,
+            fillsWidth: true
+        ))
+        .accessibilityHint(enable ? "Turns on the daily update check" : "Keeps BrightBoi from checking for updates")
     }
 
     static var batteryAdvisoryText: String {

@@ -75,6 +75,13 @@ exist there.
 Quit BrightBoi (menu bar sun, then Settings > Quit), then replace `BrightBoi.app` in
 `/Applications` with the new one and open it.
 
+BrightBoi makes no network requests unless you ask it to. **Check for Updates…** in Settings
+looks for a newer release on GitHub when you click it. From the second launch on, the popover
+asks once whether BrightBoi may check automatically; if you say yes, it contacts github.com
+(only) once a day, and you can change your mind with the "Check for updates automatically"
+switch in Settings. When a newer release exists, the popover shows a row that opens its
+download page.
+
 ## Known limitations
 
 - **Hidden menu bar icon.** When the menu bar is full, macOS hides the items that don't fit,

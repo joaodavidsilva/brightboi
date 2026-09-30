@@ -10,7 +10,7 @@ struct BrightBoiApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            BrightnessMenuContent(controller: appDelegate.controller)
+            BrightnessMenuContent(controller: appDelegate.controller, updates: appDelegate.updates)
         } label: {
             BrightnessMenuBarIcon(controller: appDelegate.controller)
         }
@@ -20,7 +20,8 @@ struct BrightBoiApp: App {
             SettingsView(
                 controller: appDelegate.controller,
                 permissions: appDelegate.permissions,
-                onShowSupport: { appDelegate.showDonationWindow() }
+                onShowSupport: { appDelegate.showDonationWindow() },
+                updates: appDelegate.updates
             )
         }
     }

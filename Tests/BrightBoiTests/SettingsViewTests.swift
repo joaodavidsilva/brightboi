@@ -53,14 +53,15 @@ struct SettingsViewTests {
 
     // MARK: - Version
 
-    @Test("no Info.plist reads dev")
+    @Test("no Info.plist drops the version")
     func versionWithoutInfo() {
-        #expect(SettingsView.versionLabel(info: nil) == "BrightBoi dev · built-in display only")
+        #expect(SettingsView.versionLabel(info: nil) == "BrightBoi · built-in display only")
     }
 
-    @Test("an Info.plist without the version key reads dev")
+    @Test("an Info.plist without the version key drops the version, even with a build number")
     func versionMissingKey() {
-        #expect(SettingsView.versionLabel(info: ["CFBundleName": "BrightBoi"]) == "BrightBoi dev · built-in display only")
+        #expect(SettingsView.versionLabel(info: ["CFBundleName": "BrightBoi"]) == "BrightBoi · built-in display only")
+        #expect(SettingsView.versionLabel(info: ["CFBundleVersion": "3"]) == "BrightBoi · built-in display only")
     }
 
     @Test("a populated Info.plist shows the version, with the build when present")
