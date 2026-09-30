@@ -1054,6 +1054,10 @@ struct BrightnessControllerTests {
         #expect(fixture.controller.currentState.percentage == 180)
         fixture.controller.setBoostCeiling(150)
         #expect(fixture.controller.currentState.percentage == 150)
+        let writes = fixture.persistence.savedBoostCeilings.count
+        fixture.controller.setBoostCeiling(150)
+        #expect(fixture.controller.currentState.percentage == 150)
+        #expect(fixture.persistence.savedBoostCeilings.count == writes)
     }
 
     @Test("an off-grid ceiling stored from a hand-edited default snaps to the grid on init, so setPercentage can't resolve above it")
