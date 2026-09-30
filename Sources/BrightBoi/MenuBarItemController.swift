@@ -329,7 +329,7 @@ final class PopoverDismissal {
         if screens() != baselineScreens {
             close(.screenChange)
         } else {
-            Log.menuBar.info("Screen parameters notification ignored: the screens are unchanged")
+            Log.menuBar.debug("Screen parameters notification ignored: the screens are unchanged")
         }
     }
 
