@@ -316,7 +316,7 @@ struct MenuBarGlyphPixelTests {
             for x in 0..<plain.width {
                 let point = (x: (Double(x) + 0.5) / Double(scale), y: (Double(y) + 0.5) / Double(scale))
                 let outside = hypot(point.x - centre.x, point.y - centre.y) > 4.5 + 0.75
-                if outside, abs(plain.at(x, y) - withBadge.at(x, y)) > 0.01 { changed += 1 }
+                if outside, abs(plain.at(x, y) - withBadge.at(x, y)) > 0.01 { changed += 1; print("DIAG pixel x=\(x) y=\(y) plain=\(plain.at(x, y)) badge=\(withBadge.at(x, y)) dist=\(hypot(point.x - centre.x, point.y - centre.y))") }
             }
         }
         #expect(changed == 0, "\(changed) pixels outside the badge's knockout changed when Boost came on")
