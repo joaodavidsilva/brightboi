@@ -31,6 +31,12 @@ struct HUDFadeMachine: Equatable {
         return action
     }
 
+    /// Forgets the panel as hidden, and overtakes any fade still running.
+    mutating func reset() {
+        generation += 1
+        phase = .hidden
+    }
+
     /// Starts the fade-out, returning the generation its completion must
     /// still match, or `nil` when there is nothing visible to fade.
     mutating func beginDismiss() -> Int? {
@@ -47,6 +53,45 @@ struct HUDFadeMachine: Equatable {
         phase = .hidden
         return true
     }
+}
+
+/// Everything the HUD reaches for outside its own panel, so a test can drive
+/// it without a screen, real time, real animation or an assistive technology
+/// listening.
+struct HUDEnvironment {
+    /// Where the panel's bottom-left corner goes, or `nil` when the HUD must
+    /// stay away (the built-in display is not active).
+    var origin: @MainActor () -> CGPoint?
+    var reduceMotion: @MainActor () -> Bool
+    /// Runs `work` after `delay` seconds and returns a closure that cancels it.
+    var schedule: @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> (@MainActor () -> Void)
+    /// Animates the panel's alpha to `alpha` over `duration`, then calls
+    /// `completion`. A zero duration replaces any animation still running.
+    var animateAlpha: @MainActor (NSPanel, CGFloat, TimeInterval, (@MainActor () -> Void)?) -> Void
+    /// Posts one accessibility notification for `element`.
+    var postAccessibility: @MainActor (Any, NSAccessibility.Notification, [NSAccessibility.NotificationUserInfoKey: Any]) -> Void
+
+    static let live = HUDEnvironment(
+        origin: { BrightnessHUDController.builtInOrigin() },
+        reduceMotion: { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
+        schedule: { delay, work in
+            let item = DispatchWorkItem { MainActor.assumeIsolated { work() } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            return { item.cancel() }
+        },
+        animateAlpha: { panel, alpha, duration, completion in
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                panel.animator().alphaValue = alpha
+            } completionHandler: {
+                guard let completion else { return }
+                MainActor.assumeIsolated { completion() }
+            }
+        },
+        postAccessibility: { element, notification, userInfo in
+            NSAccessibility.post(element: element, notification: notification, userInfo: userInfo)
+        }
+    )
 }
 
 /// Owns the always-on-top, non-activating overlay window the HUD lives in.
@@ -69,21 +114,22 @@ final class BrightnessHUDController {
     /// Fraction of the screen's usable height the panel's bottom edge sits
     /// above, matching roughly where macOS's own native HUD sits.
     private static let verticalScreenFraction: CGFloat = 0.18
-    private static let fadeInDuration: TimeInterval = 0.12
-    private static let fadeOutDuration: TimeInterval = 0.35
-    /// Held-key repeats arrive faster than speech can follow; while VoiceOver
-    /// runs, only the last of a burst is announced.
-    private static let announcementDebounce: TimeInterval = 0.3
+    static let fadeInDuration: TimeInterval = 0.12
+    static let fadeOutDuration: TimeInterval = 0.35
+    /// A burst of presses is announced once, this long after the last.
+    static let announcementDebounce: TimeInterval = 0.3
 
-    private let panel: NSPanel
+    let panel: NSPanel
     private let hostingView: NSHostingView<BrightnessHUDView>
     private let autoDismissDelay: TimeInterval
-    private var dismissWorkItem: DispatchWorkItem?
-    private var announcementWorkItem: DispatchWorkItem?
+    private let environment: HUDEnvironment
+    private var cancelDismiss: (@MainActor () -> Void)?
+    private var cancelAnnouncement: (@MainActor () -> Void)?
     private var fade = HUDFadeMachine()
 
-    init(autoDismissDelay: TimeInterval = 1.0) {
+    init(autoDismissDelay: TimeInterval = 1.0, environment: HUDEnvironment = .live) {
         self.autoDismissDelay = autoDismissDelay
+        self.environment = environment
 
         // Never actually shown — the panel starts ordered out and only
         // appears once `present(state:)` supplies a real state.
@@ -176,62 +222,64 @@ final class BrightnessHUDController {
     /// up for `autoDismissDelay` seconds after the *last* press, not the
     /// first. Does nothing while the built-in display is not active.
     func present(state: BrightnessController.State) {
-        guard let origin = builtInOrigin() else { return }
+        guard let origin = environment.origin() else { return }
 
         hostingView.rootView = BrightnessHUDView(state: state)
         panel.setFrameOrigin(origin)
 
-        let durations = Self.fadeDurations(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        let durations = Self.fadeDurations(reduceMotion: environment.reduceMotion())
         switch fade.show() {
         case .fadeIn:
             panel.alphaValue = 0
             panel.orderFrontRegardless()
-            animateAlpha(to: 1, duration: durations.fadeIn)
+            environment.animateAlpha(panel, 1, durations.fadeIn, nil)
         case .snapOpaque:
             // Zero-duration group: replaces any fade-out still running, so
             // its completion cannot order the panel out from under us.
-            animateAlpha(to: 1, duration: 0)
+            environment.animateAlpha(panel, 1, 0, nil)
             panel.orderFrontRegardless()
         }
-        scheduleAutoDismiss(fadeOutDuration: durations.fadeOut)
+        scheduleAutoDismiss()
         announce(state: state)
     }
 
-    private func builtInOrigin() -> CGPoint? {
+    /// Orders the panel out at once, with no fade and no announcement still
+    /// pending. For the end of a test, and for anything that must not leave
+    /// the HUD behind.
+    func hideImmediately() {
+        cancelDismiss?()
+        cancelDismiss = nil
+        cancelAnnouncement?()
+        cancelAnnouncement = nil
+        fade.reset()
+        panel.orderOut(nil)
+    }
+
+    static func builtInOrigin() -> CGPoint? {
         guard let builtInID = BuiltInDisplay.resolveID(), BuiltInDisplay.isActive(builtInID) else { return nil }
         let screens = NSScreen.screens.compactMap { screen -> (id: CGDirectDisplayID, visibleFrame: CGRect)? in
             BuiltInDisplay.screenNumber(of: screen).map { (id: $0, visibleFrame: screen.visibleFrame) }
         }
-        return Self.hudOrigin(
+        return hudOrigin(
             panelSize: BrightnessHUDView.panelSize,
             screens: screens,
             isBuiltin: { $0 == builtInID }
         )
     }
 
-    private func animateAlpha(to alpha: CGFloat, duration: TimeInterval, completion: (@MainActor () -> Void)? = nil) {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            panel.animator().alphaValue = alpha
-        } completionHandler: {
-            guard let completion else { return }
-            MainActor.assumeIsolated { completion() }
+    private func scheduleAutoDismiss() {
+        cancelDismiss?()
+        cancelDismiss = environment.schedule(autoDismissDelay) { [weak self] in
+            self?.dismiss()
         }
     }
 
-    private func scheduleAutoDismiss(fadeOutDuration: TimeInterval) {
-        dismissWorkItem?.cancel()
-
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.dismiss(fadeOutDuration: fadeOutDuration)
-        }
-        dismissWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + autoDismissDelay, execute: workItem)
-    }
-
-    private func dismiss(fadeOutDuration: TimeInterval) {
+    /// Reduce Motion is read when the fade starts, not when it was scheduled,
+    /// so switching it on while the HUD is up applies to its fade-out.
+    private func dismiss() {
         guard let generation = fade.beginDismiss() else { return }
-        animateAlpha(to: 0, duration: fadeOutDuration) { [weak self] in
+        let fadeOutDuration = Self.fadeDurations(reduceMotion: environment.reduceMotion()).fadeOut
+        environment.animateAlpha(panel, 0, fadeOutDuration) { [weak self] in
             guard let self, self.fade.finishDismiss(generation: generation) else { return }
             self.panel.orderOut(nil)
         }
@@ -239,8 +287,25 @@ final class BrightnessHUDController {
 
     // MARK: - VoiceOver
 
+    /// The accessibility element an announcement is posted for: the
+    /// application itself. BrightBoi is an accessory app that is never
+    /// frontmost when its keys are pressed, and is not key anywhere, so no
+    /// window of its could stand in for it.
+    static var announcementElement: Any { NSApplication.shared }
+
+    /// What goes with the announcement. High priority interrupts one still
+    /// being spoken, so a burst of presses ends on the last value.
+    static func announcementUserInfo(text: String) -> [NSAccessibility.NotificationUserInfoKey: Any] {
+        [
+            .announcement: text,
+            .priority: NSAccessibilityPriorityLevel.high.rawValue
+        ]
+    }
+
     /// The HUD itself is hidden from accessibility and the keys it answers
     /// are swallowed, so nothing else tells a VoiceOver user the new level.
+    /// Held-key repeats arrive faster than speech can follow, so a burst of
+    /// presses is announced once, after the last one.
     private func announce(state: BrightnessController.State) {
         let text = Self.announcementText(
             percentage: state.percentage,
@@ -248,24 +313,13 @@ final class BrightnessHUDController {
             supportsBoost: state.supportsBoost,
             boostCeiling: state.boostCeiling
         )
-        announcementWorkItem?.cancel()
-        guard NSWorkspace.shared.isVoiceOverEnabled else {
-            Self.post(announcement: text)
-            return
+        cancelAnnouncement?()
+        cancelAnnouncement = environment.schedule(Self.announcementDebounce) { [environment] in
+            environment.postAccessibility(
+                Self.announcementElement,
+                .announcementRequested,
+                Self.announcementUserInfo(text: text)
+            )
         }
-        let workItem = DispatchWorkItem { Self.post(announcement: text) }
-        announcementWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.announcementDebounce, execute: workItem)
-    }
-
-    private static func post(announcement: String) {
-        NSAccessibility.post(
-            element: NSApp as Any,
-            notification: .announcementRequested,
-            userInfo: [
-                .announcement: announcement,
-                .priority: NSAccessibilityPriorityLevel.high.rawValue
-            ]
-        )
     }
 }
