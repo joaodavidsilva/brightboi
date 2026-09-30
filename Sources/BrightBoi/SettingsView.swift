@@ -283,6 +283,10 @@ struct SettingsView: View {
 
     // MARK: - Permissions
 
+    private func needsInputMonitoring(_ state: BrightnessController.State) -> Bool {
+        permissions.needsInputMonitoring(keyRemapEnabled: state.keyRemapEnabled, keyTapActive: controller.keyRemapActive)
+    }
+
     private func permissionsSection(state: BrightnessController.State) -> some View {
         Section {
             permissionRow(title: "Accessibility", granted: permissions.accessibilityGranted) {
@@ -291,7 +295,7 @@ struct SettingsView: View {
             // Whether this Mac needs Input Monitoring for the key tap
             // is only known when the tap fails with Accessibility
             // already granted, so the row appears only then.
-            if permissions.needsInputMonitoring(keyRemapEnabled: state.keyRemapEnabled, keyTapActive: controller.keyRemapActive) {
+            if needsInputMonitoring(state) {
                 permissionRow(title: "Input Monitoring", granted: permissions.inputMonitoringGranted) {
                     permissions.requestOrOpenSettings(.inputMonitoring)
                 }
@@ -301,7 +305,16 @@ struct SettingsView: View {
         } footer: {
             // "These", not "both": Input Monitoring is listed only on Macs
             // that need it.
-            Text("Without these permissions the slider still works — F1/F2 go back to macOS's own brightness control, and a custom shortcut reaches whichever app is in front.")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Without these permissions the slider still works — F1/F2 go back to macOS's own brightness control, and a custom shortcut reaches whichever app is in front.")
+                // After an update signed with a different certificate, macOS
+                // can list BrightBoi as switched on while the old grant no
+                // longer applies; removing and re-adding it is the fix.
+                if !permissions.accessibilityGranted
+                    || (needsInputMonitoring(state) && !permissions.inputMonitoringGranted) {
+                    Text("Switched on in System Settings but still shown as Not granted? Select BrightBoi in that list, click the minus button and add it again.")
+                }
+            }
         }
     }
 
