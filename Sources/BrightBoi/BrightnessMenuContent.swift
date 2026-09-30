@@ -21,6 +21,7 @@ struct BrightnessMenuContent: View {
     var quit: @MainActor () -> Void = { NSApplication.shared.terminate(nil) }
 
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// A comfortable low-light level, rather than an arbitrary round number.
     private static let dimPercentage: Double = 40
@@ -54,7 +55,7 @@ struct BrightnessMenuContent: View {
             .allowsHitTesting(controlsEnabled)
             .disabled(!controlsEnabled)
 
-            if hasAdvisories(state: state) {
+            if hasAdvisories(state: state) || Self.reservesBoostFootnote(for: state) {
                 advisories(state: state)
             }
 
@@ -217,13 +218,23 @@ struct BrightnessMenuContent: View {
         title == "Max boi" ? ["Max boi", "Maximum brightness"] : [title]
     }
 
+    /// Whether the HDR footnote's slot is laid out. It is reserved whenever
+    /// the display could be boosted, and only its text fades in and out, so
+    /// the popover is the same height at 95% and 105% and nothing moves
+    /// under the pointer while the slider is dragged across 100%. Without
+    /// Boost, or with the built-in display off, there is no footnote to make
+    /// room for.
+    static func reservesBoostFootnote(for state: BrightnessController.State) -> Bool {
+        state.supportsBoost && state.builtInDisplayAvailable
+    }
+
     /// Whether anything below the quick-set row has something to say. The
-    /// HDR footnote counts: it is shown only while Boost is actually on.
+    /// HDR footnote is not counted: it is shown only while Boost is on, and
+    /// its slot is reserved separately so it never changes the height.
     private func hasAdvisories(state: BrightnessController.State) -> Bool {
         isKeyRemapDown(state: state)
             || state.boostBlockedByOtherApp
             || state.isBoostPaused
-            || state.isBoosted
             || !state.builtInDisplayAvailable
             || !state.nominalControlAvailable
             || controller.batteryAdvisoryVisible
@@ -299,13 +310,18 @@ struct BrightnessMenuContent: View {
                     spokenLabel: Self.thermalAdvisorySpokenLabel(thermalAdvisory)
                 )
             }
-            if state.isBoosted && state.builtInDisplayAvailable {
+            if Self.reservesBoostFootnote(for: state) {
                 // Boost scales the whole display, HDR included; nothing can
-                // be done about it, so it is a footnote, not a warning.
+                // be done about it, so it is a footnote, not a warning. It
+                // is always laid out (see `reservesBoostFootnote`) and only
+                // its opacity changes, so VoiceOver skips it until it shows.
                 Text("While boosted, HDR video and photos lose their brightest highlights.")
                     .font(Theme.Typography.secondary)
                     .foregroundStyle(Color.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .opacity(state.isBoosted ? 1 : 0)
+                    .accessibilityHidden(!state.isBoosted)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: state.isBoosted)
             }
         }
     }

@@ -231,6 +231,9 @@ struct ControllerRig {
     let permissionsChecker = FakePermissionsChecker()
     let permissions: PermissionsModel
     let opened: OpenedURLs
+    let power = FakePowerSourceProvider()
+    let thermal = FakeThermalStateProvider()
+    let displayAccessibility = FakeDisplayAccessibility()
 
     /// Records what the permissions model was asked to open, instead of opening it.
     final class OpenedURLs {
@@ -269,10 +272,10 @@ struct ControllerRig {
             loginItemService: loginItems,
             persistence: persistence,
             keyTap: keyTap,
-            powerSource: FakePowerSourceProvider(),
-            thermalState: FakeThermalStateProvider(),
+            powerSource: power,
+            thermalState: thermal,
             bundleLocation: FakeBundleLocationProvider(),
-            displayAccessibility: FakeDisplayAccessibility(),
+            displayAccessibility: displayAccessibility,
             permissions: permissions,
             schedule: ManualPersistScheduler().schedule,
             keyTapWatchSchedule: ManualPersistScheduler().schedule
