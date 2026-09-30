@@ -16,6 +16,17 @@ struct RealBrightnessPersistenceTests {
         return (name, UserDefaults(suiteName: name)!)
     }
 
+    @Test("registering false for the launch-at-login key makes a fresh domain load false, and an explicit true still wins")
+    func registeredLaunchAtLoginDefault() {
+        let (name, defaults) = makeSuite()
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.register(defaults: [RealBrightnessPersistence.launchAtLoginEnabledKey: false])
+        let persistence = RealBrightnessPersistence(defaults: defaults)
+        #expect(persistence.loadLaunchAtLoginEnabled() == false)
+        persistence.save(launchAtLoginEnabled: true)
+        #expect(persistence.loadLaunchAtLoginEnabled() == true)
+    }
+
     // MARK: loadPercentage
 
     @Test("a missing percentage key returns nil")

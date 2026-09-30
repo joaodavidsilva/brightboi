@@ -8,6 +8,10 @@ import Foundation
 /// "original" baseline, so its scaling compounds on top of the first
 /// instead of replacing it.
 ///
+/// The shipping app and the debug "BrightBoi Dev" build have different bundle
+/// identifiers but drive the same panel, so both count as the same owner.
+/// A copy of the *other* identity is never quit silently: the user is asked.
+///
 /// `shouldSurvive` is the pure decision, unit-tested directly; `acquire()`
 /// wraps it with the real `NSRunningApplication`/`DistributedNotificationCenter`
 /// side effects and can't be exercised the same way (it depends on actually
@@ -20,6 +24,28 @@ enum SingleInstanceGuard {
         var version: String
         var launchDate: Date
         var pid: Int32
+    }
+
+    /// Every bundle identifier that drives the built-in panel.
+    static let knownBundleIdentifiers = ["com.ptlghost.BrightBoi", "com.ptlghost.BrightBoi.dev"]
+
+    /// The known identifiers other than `identifier`: the copies that are a
+    /// different identity of this app rather than another instance of it.
+    static func otherIdentifiers(than identifier: String) -> [String] {
+        knownBundleIdentifiers.filter { $0 != identifier }
+    }
+
+    /// The name the user knows a copy by, for the conflict alert.
+    static func displayName(forBundleIdentifier identifier: String) -> String {
+        identifier.hasSuffix(".dev") ? "BrightBoi Dev" : "BrightBoi"
+    }
+
+    /// Text of the alert shown when a copy with the other identity is running.
+    static func conflictAlertText(myName: String, otherName: String) -> (message: String, detail: String) {
+        (
+            "\(otherName) is already running",
+            "\(otherName) and \(myName) both control the built-in display, so only one can run at a time. Quit \(otherName) to continue with \(myName)."
+        )
     }
 
     static let revealNotificationName = Notification.Name("com.ptlghost.BrightBoi.reveal")
@@ -51,12 +77,22 @@ enum SingleInstanceGuard {
     /// Finds every other running copy with the same bundle identifier,
     /// decides who survives, and either quits the losing side(s) or exits
     /// this process — before anything else touches the display, the login
-    /// item list or the key tap. Returns `true` when this launch should
+    /// item list or the key tap. A running copy with the other identity is
+    /// handled by asking the user. Returns `true` when this launch should
     /// continue.
     static func acquire() -> Bool {
         let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.ptlghost.BrightBoi"
-        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+        guard acquireAgainstSameIdentity(bundleIdentifier) else { return false }
+        return resolveOtherIdentity(than: bundleIdentifier)
+    }
+
+    private static func runningCopies(of identifier: String) -> [NSRunningApplication] {
+        NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+    }
+
+    private static func acquireAgainstSameIdentity(_ bundleIdentifier: String) -> Bool {
+        let others = runningCopies(of: bundleIdentifier)
         guard !others.isEmpty else { return true }
 
         let myVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
@@ -72,20 +108,47 @@ enum SingleInstanceGuard {
             return false
         }
 
-        for other in others {
-            _ = other.terminate()
-        }
-        let deadline = Date().addingTimeInterval(terminationTimeout)
-        while others.contains(where: { !$0.isTerminated }), Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(terminationPollInterval))
-        }
-        guard others.allSatisfy(\.isTerminated) else {
+        guard quitAndWait(others) else {
             // A stubborn old copy didn't quit in time — defer to it rather
             // than double-drive the display alongside it.
             revealRunningCopy()
             return false
         }
         return true
+    }
+
+    /// Asks the user before quitting a copy with the other identity (the
+    /// release while running a dev build, or the reverse). Declining, or a
+    /// copy that will not quit, leaves the other copy running and this one
+    /// exits.
+    private static func resolveOtherIdentity(than bundleIdentifier: String) -> Bool {
+        let otherCopies = otherIdentifiers(than: bundleIdentifier).flatMap(runningCopies(of:))
+        guard let first = otherCopies.first else { return true }
+
+        let otherName = displayName(forBundleIdentifier: first.bundleIdentifier ?? "")
+        let text = conflictAlertText(myName: displayName(forBundleIdentifier: bundleIdentifier), otherName: otherName)
+        let alert = NSAlert()
+        alert.messageText = text.message
+        alert.informativeText = text.detail
+        alert.addButton(withTitle: "Quit \(otherName)")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn, quitAndWait(otherCopies) else {
+            revealRunningCopy()
+            return false
+        }
+        return true
+    }
+
+    private static func quitAndWait(_ apps: [NSRunningApplication]) -> Bool {
+        for app in apps {
+            _ = app.terminate()
+        }
+        let deadline = Date().addingTimeInterval(terminationTimeout)
+        while apps.contains(where: { !$0.isTerminated }), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(terminationPollInterval))
+        }
+        return apps.allSatisfy(\.isTerminated)
     }
 
     /// Signals the already-running copy to open its Settings window, so that

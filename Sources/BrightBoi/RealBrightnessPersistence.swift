@@ -7,7 +7,7 @@ import os
 /// custom durability mechanism needed beyond reading/writing the one key.
 final class RealBrightnessPersistence: BrightnessPersisting {
     private static let percentageKey = "com.ptlghost.BrightBoi.percentage"
-    private static let launchAtLoginEnabledKey = "com.ptlghost.BrightBoi.launchAtLoginEnabled"
+    static let launchAtLoginEnabledKey = "com.ptlghost.BrightBoi.launchAtLoginEnabled"
     private static let lastRegisteredLoginItemPathKey = "com.ptlghost.BrightBoi.lastRegisteredLoginItemPath"
     private static let boostCeilingKey = "com.ptlghost.BrightBoi.boostCeiling"
     private static let keyRemapShortcutKey = "com.ptlghost.BrightBoi.keyRemapShortcut"

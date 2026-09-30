@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/joaodavidsilva/brightboi/releases/latest"><img src="https://img.shields.io/github/v/release/joaodavidsilva/brightboi?label=download&color=orange" alt="Latest release"></a>
-  <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="Platform: macOS">
+  <img src="https://img.shields.io/badge/macOS%2014%2B%20%C2%B7%20Apple%20silicon-lightgrey" alt="Requires macOS 14 or later on Apple silicon">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
   <a href="https://buymeacoffee.com/ptlghost"><img src="https://img.shields.io/badge/buy%20me%20a-coffee-ffdd00?logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
 </p>
@@ -40,25 +40,40 @@ continuous slider:
   login** so Auto-Brightness Takeover is active from the moment you log in.
 - **Built-in display only** — never touches an external monitor.
 
-Only available on Macs with an XDR (mini-LED) display. On a non-XDR Mac (e.g. MacBook Air),
-BrightBoi still works, but the slider simply caps at 100% Nominal Brightness with no Boost UI,
-since the physical backlight headroom Boost relies on doesn't exist there.
+Boost is only available on Macs with an XDR (mini-LED) display. On a non-XDR Apple silicon
+Mac (e.g. MacBook Air), BrightBoi still works, but the slider simply caps at 100% Nominal
+Brightness with no Boost UI, since the physical backlight headroom Boost relies on doesn't
+exist there.
+
+## Requirements
+
+- An Apple silicon Mac (M1 or later) running macOS 14 (Sonoma) or later. Intel Macs are not
+  supported.
+- For Boost (100–200%): a MacBook Pro with a Liquid Retina XDR display.
 
 ## Install
 
-1. Download the latest `BrightBoi.zip` from [Releases](https://github.com/joaodavidsilva/brightboi/releases/latest).
+1. Download the latest zip (`BrightBoi-<version>.zip`) from [Releases](https://github.com/joaodavidsilva/brightboi/releases/latest).
 2. Unzip it and drag `BrightBoi.app` into `/Applications`.
-3. **First launch:** right-click (or Control-click) `BrightBoi.app` and choose **Open**, then
-   confirm in the dialog that appears.
+3. **First launch:** this app isn't notarized yet (see [Known limitations](#known-limitations)
+   below), so Gatekeeper blocks a plain double-click with an "unidentified developer" warning.
+   - **macOS 15 and later:** double-click `BrightBoi.app`, dismiss the warning, then open
+     **System Settings > Privacy & Security**, scroll to the Security section and choose
+     **Open Anyway** next to BrightBoi. Confirm in the dialog that appears.
+   - **macOS 14:** right-click (or Control-click) `BrightBoi.app`, choose **Open**, then
+     confirm in the dialog.
 
-   This app isn't notarized yet (see [Known limitations](#known-limitations) below), so a plain
-   double-click will be blocked by Gatekeeper with an "unidentified developer" warning. Opening
-   it this way once is enough — macOS remembers your choice after that.
+   Doing this once is enough: macOS remembers your choice after that.
 4. A sun icon appears in your menu bar. Click it for the brightness slider.
 5. To take over the physical brightness keys (F1/F2), BrightBoi needs the **Accessibility**
    permission. Grant it in System Settings when prompted. BrightBoi picks the permission up while it
    runs; if the keys still stay with macOS, use "Relaunch BrightBoi" in Settings. The slider and
    custom shortcuts work without it.
+
+## Updating
+
+Quit BrightBoi (menu bar sun, then Settings > Quit), then replace `BrightBoi.app` in
+`/Applications` with the new one and open it.
 
 ## Known limitations
 
@@ -81,22 +96,37 @@ since the physical backlight headroom Boost relies on doesn't exist there.
   brightness-key handling in the other app, or turn off "Let BrightBoi own F1 / F2" in Settings.
 - **Screen saver and lock screen.** Boost steps aside while the screen saver or lock screen
   covers the display, and returns when they end.
-- **Not notarized.** Builds are currently ad-hoc signed rather than signed with a Developer ID
-  and notarized by Apple, since the app depends on private APIs the App Store disallows and a
-  direct-distribution pipeline is still being finalized — hence the right-click-Open step above.
-  This will change once proper signing is set up.
+- **Not notarized.** Releases are currently signed with a development certificate and are not
+  notarized by Apple, so Gatekeeper asks you to confirm the first launch (see
+  [Install](#install)). Because the signing certificate will change once a Developer ID
+  release ships, macOS may ask you to grant Accessibility and Input Monitoring to BrightBoi
+  again after that update.
 
 ## Building from source
 
-Runs on macOS 14 (Sonoma) or later. Building requires Xcode 16 / the Swift 6 toolchain.
+Runs on macOS 14 (Sonoma) or later on Apple silicon. Building requires Xcode 16 / the Swift 6
+toolchain.
 
 ```bash
 git clone https://github.com/joaodavidsilva/brightboi.git
 cd brightboi
 swift build                      # debug build
 swift test                       # run the test suite
-Packaging/build-app.sh release   # produce BrightBoi.app in .build/
+Packaging/build-app.sh           # debug bundle (com.ptlghost.BrightBoi.dev) in .build/
 ```
+
+`Packaging/build-app.sh` builds the debug bundle by default. It runs as **BrightBoi Dev**
+with its own settings, so it does not touch an installed BrightBoi's preferences or login
+item. It goes through onboarding again, and needs its own Accessibility and Input Monitoring
+grants once. `defaults delete com.ptlghost.BrightBoi.dev` resets its state without touching
+the installed release. Quit the installed BrightBoi before running a local build — both drive
+the same display.
+
+`Packaging/build-app.sh release` produces the shipping identity (`com.ptlghost.BrightBoi`).
+It signs with a Developer ID or Apple Development certificate when one is installed and
+refuses to fall back to ad-hoc signing, which would make macOS forget permission grants on
+every build. Without a certificate, set `ALLOW_ADHOC_RELEASE=1` to build an ad-hoc signed
+release bundle for local use only.
 
 ## Support
 

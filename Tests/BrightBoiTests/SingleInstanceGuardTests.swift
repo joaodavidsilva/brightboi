@@ -101,4 +101,33 @@ struct SingleInstanceGuardTests {
         )
         #expect(survives == false)
     }
+
+    @Test("the shipping and dev identities are both known panel owners")
+    func knownIdentifiers() {
+        #expect(SingleInstanceGuard.knownBundleIdentifiers == ["com.ptlghost.BrightBoi", "com.ptlghost.BrightBoi.dev"])
+    }
+
+    @Test("the other identity of the release is the dev build, and the reverse")
+    func otherIdentity() {
+        #expect(SingleInstanceGuard.otherIdentifiers(than: "com.ptlghost.BrightBoi") == ["com.ptlghost.BrightBoi.dev"])
+        #expect(SingleInstanceGuard.otherIdentifiers(than: "com.ptlghost.BrightBoi.dev") == ["com.ptlghost.BrightBoi"])
+    }
+
+    @Test("an unknown identifier treats both known identities as other copies")
+    func unknownIdentifierSeesBoth() {
+        #expect(SingleInstanceGuard.otherIdentifiers(than: "com.example.other").count == 2)
+    }
+
+    @Test("copies are named the way the user sees them")
+    func displayNames() {
+        #expect(SingleInstanceGuard.displayName(forBundleIdentifier: "com.ptlghost.BrightBoi") == "BrightBoi")
+        #expect(SingleInstanceGuard.displayName(forBundleIdentifier: "com.ptlghost.BrightBoi.dev") == "BrightBoi Dev")
+    }
+
+    @Test("the conflict alert names the other copy")
+    func conflictAlertNamesOtherCopy() {
+        let text = SingleInstanceGuard.conflictAlertText(myName: "BrightBoi Dev", otherName: "BrightBoi")
+        #expect(text.message == "BrightBoi is already running")
+        #expect(text.detail.contains("Quit BrightBoi to continue with BrightBoi Dev"))
+    }
 }
