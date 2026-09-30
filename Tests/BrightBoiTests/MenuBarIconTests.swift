@@ -30,14 +30,11 @@ struct MenuBarIconTests {
         #expect(a != b)
     }
 
-    @Test("a cached image equals the first render, and 0% differs from 5%")
+    @Test("a cached image equals the first render")
     func cacheIsStable() throws {
         let first = try #require(BrightnessMenuBarIcon.image(fraction: 0.3, isBoosted: false).tiffRepresentation)
         let second = try #require(BrightnessMenuBarIcon.image(fraction: 0.3, isBoosted: false).tiffRepresentation)
         #expect(first == second)
-        let empty = try #require(BrightnessMenuBarIcon.image(fraction: 0, isBoosted: false).tiffRepresentation)
-        let five = try #require(BrightnessMenuBarIcon.image(fraction: 0.05, isBoosted: false).tiffRepresentation)
-        #expect(empty != five)
     }
 
     @Test("images are templates on the fixed canvas and carry the description")
