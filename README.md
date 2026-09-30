@@ -62,6 +62,11 @@ since the physical backlight headroom Boost relies on doesn't exist there.
 
 ## Known limitations
 
+- **Hidden menu bar icon.** When the menu bar is full, macOS hides the items that don't fit,
+  and on a MacBook Pro with a notch they can end up behind it. If BrightBoi's sun is missing,
+  open BrightBoi again from Applications or Spotlight: it opens Settings, where you can change
+  your options or quit. Quitting other menu bar apps, or switching off items in System Settings >
+  Menu Bar, makes room for the icon again.
 - **HDR highlights while boosted.** Boost scales the whole display, HDR video and photos
   included, so while the slider is above 100% their brightest highlights are lost. Boost is
   off at 100% and below.

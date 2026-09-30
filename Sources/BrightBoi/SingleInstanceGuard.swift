@@ -88,9 +88,9 @@ enum SingleInstanceGuard {
         return true
     }
 
-    /// Signals the already-running copy to show its HUD, since there's no
-    /// public API to bring an `MenuBarExtra`-only, `LSUIElement` app's
-    /// window forward the way `NSApp.activate` would for an ordinary app.
+    /// Signals the already-running copy to open its Settings window, so that
+    /// starting BrightBoi again always shows the user something, even when
+    /// the running copy's menu bar item is hidden.
     private static func revealRunningCopy() {
         DistributedNotificationCenter.default().postNotificationName(
             revealNotificationName,
@@ -101,7 +101,7 @@ enum SingleInstanceGuard {
     }
 
     /// Called once by the surviving copy so a later launch attempt reveals
-    /// this one instead of starting a second process.
+    /// this one (by opening Settings) instead of starting a second process.
     static func observeReveal(_ onReveal: @escaping @MainActor () -> Void) {
         DistributedNotificationCenter.default().addObserver(forName: revealNotificationName, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {

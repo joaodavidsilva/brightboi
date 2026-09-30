@@ -61,10 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
 
-        let hud = hud
         SingleInstanceGuard.observeReveal { [weak self] in
-            guard let self else { return }
-            hud.present(state: self.controller.currentState)
+            self?.revealApp()
         }
 
         controller.onKeyPress = { [hud] _, state in
@@ -94,6 +92,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             })
             onboardingWindow = window
             window.show()
+        }
+    }
+
+    /// Launching BrightBoi again (Finder, Spotlight, `open`) is the way back in
+    /// when its menu bar item is hidden, for example behind the notch. The app
+    /// has no Dock icon and no window of its own to show, so it opens
+    /// Settings, unless onboarding is up, which is brought forward instead.
+    /// Returning `false` stops AppKit from also trying to open a window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        revealApp()
+        return false
+    }
+
+    private func revealApp() {
+        if let onboardingWindow {
+            onboardingWindow.bringToFront()
+        } else {
+            NotificationCenter.default.post(name: BrightnessMenuBarIcon.openSettingsRequested, object: nil)
         }
     }
 

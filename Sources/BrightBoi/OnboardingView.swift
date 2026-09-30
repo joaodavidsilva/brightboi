@@ -175,9 +175,14 @@ private struct ConfirmationStepView: View {
                 .font(Theme.Typography.title)
                 .foregroundStyle(Color.textPrimary)
 
-            Text("I live in the menu bar. Click the sun, or just hit F2 past where it used to stop.")
+            Text("I live in the menu bar. Click the sun icon, or just hit F2 past where it used to stop.")
                 .font(Theme.Typography.body)
                 .foregroundStyle(Color.textSecondary)
+
+            Text("Can't see the sun? Your menu bar may be full. Open BrightBoi again from Applications.")
+                .font(Theme.Typography.secondary)
+                .foregroundStyle(Color.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
 
             VStack(spacing: 10) {
                 ZStack(alignment: .leading) {
