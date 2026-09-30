@@ -1,54 +1,173 @@
+import AppKit
 import SwiftUI
 
-/// The menu bar label: a sun glyph that fills from the bottom in proportion
-/// to `BrightnessController.State.iconFillFraction`, so it visibly tracks
-/// the slider live. No inline percentage text — the redesigned popover is
-/// where the exact number lives now, so the menu bar itself stays visually
-/// quiet (ticket 01).
+/// The menu bar label: a sun whose disc fills from the bottom in proportion
+/// to `BrightnessController.State.iconFillFraction`, so it tracks the slider
+/// live, with a small arrow badge once Boosted.
 ///
-/// Empirically verified (throwaway `ImageRenderer` probe, not shipped) that
-/// SF Symbols' `Image(systemName:variableValue:)` renders byte-identical
-/// output across fractions for `sun.max` / `sun.max.fill` — that symbol has
-/// no variable-color layers, so `variableValue` is silently ignored. This
-/// masked-fill composition was confirmed to render distinctly across
-/// fractions instead.
+/// `MenuBarExtra` keeps only the first plain image of its label and drops
+/// masks, opacity and overlays, so the glyph is drawn once into a single
+/// template `NSImage` and handed over as that. A template image is tinted by
+/// the menu bar itself, so it stays legible on light and dark bars and
+/// against any wallpaper.
 ///
-/// `iconFillFraction` spans the full 0...200% range (`percentage / 200`, per
-/// ticket 03) — at Nominal 100% this reaches exactly half fill, at Boost
-/// 200% it reaches full. On a non-XDR Mac (`supportsBoost == false`, ticket
-/// 02) the reachable range is only 0...100, so the controller divides by 100
-/// there instead — 100% still reads as a full icon, not half.
+/// The rays and ring are always drawn at full strength: the item is the app's
+/// only way in, and a faint outline at low brightness reads as disabled. Only
+/// the disc fills. `iconFillFraction` spans the full 0...200% range on an XDR
+/// panel (100% is half full) and 0...100% elsewhere, where the controller
+/// divides by 100 instead. The badge is the cue for Boost that survives
+/// template rendering, where a colour change would be flattened.
 ///
-/// Fill level alone doesn't satisfy spec item 3 (the icon must look visually
-/// distinct once Boosted, not just "more full") — menu bar icons can be
-/// template-rendered (monochrome) by macOS, so a color-only cue risks being
-/// silently flattened. A small badge glyph, consuming `isBoosted` directly
-/// (per the spec: the icon renderer consumes derived state, not recomputed
-/// state) survives that. Manual verification on the target machine still
-/// needed — this is UI, explicitly out of the controller-level test seam per
-/// the spec's Testing Decisions.
+/// The image carries the spoken description, because the label set on the
+/// view is what the status item reports to VoiceOver: "BrightBoi, brightness
+/// N percent", plus ", boosted" once past 100%.
 struct BrightnessMenuBarIcon: View {
     var controller: BrightnessController
 
+    /// Posted, in process, when something other than the popover asks the
+    /// app to open its Settings window: a relaunch from Finder or Spotlight,
+    /// or a second copy starting. Observed here because `openSettings` is an
+    /// environment action, and this label is the one view that is always
+    /// mounted.
+    static let openSettingsRequested = Notification.Name("com.ptlghost.BrightBoi.openSettingsRequested")
+
+    @Environment(\.openSettings) private var openSettings
+
     var body: some View {
+        let state = controller.currentState
+        let label = Self.accessibilityLabel(percentage: state.percentage, isBoosted: state.isBoosted)
+        Image(nsImage: Self.image(fraction: state.iconFillFraction, isBoosted: state.isBoosted, description: label))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .onReceive(NotificationCenter.default.publisher(for: Self.openSettingsRequested)) { _ in
+                BrightnessMenuContent.openSettingsWindow { openSettings() }
+            }
+    }
+
+    // MARK: - Pure helpers
+
+    /// The canvas every glyph is drawn on, in points. The badge sits inside
+    /// it, so nothing is clipped or widens the status item.
+    static let canvasSize = CGSize(width: 20, height: 16)
+
+    /// Where the disc lies in the sun symbol as drawn at `symbolPointSize`:
+    /// the bottom of the ring is 0.266 of the canvas height above the canvas
+    /// bottom, and the ring is 0.461 of the height tall. Measured on the
+    /// rendered symbol, not derived from its metrics.
+    static let symbolPointSize: CGFloat = 15
+    /// Height of the disc's bottom edge above the canvas bottom, as a fraction of the canvas height.
+    static let discBottom: CGFloat = 0.266
+    /// Height of the disc, as a fraction of the canvas height.
+    static let discHeight: CGFloat = 0.461
+
+    /// Height of the fill mask, measured up from the canvas bottom, for a
+    /// fill `fraction` (clamped to 0...1) on a canvas `canvasHeight` tall.
+    /// At 0 the mask ends at the bottom of the disc, so nothing is filled;
+    /// at 1 it ends at the top of the disc.
+    static func fillMaskHeight(fraction: Double, canvasHeight: CGFloat) -> CGFloat {
+        let clamped = CGFloat(min(max(fraction, 0), 1))
+        return canvasHeight * (discBottom + discHeight * clamped)
+    }
+
+    /// What VoiceOver says for the status item.
+    static func accessibilityLabel(percentage: Double, isBoosted: Bool) -> String {
+        let level = "BrightBoi, brightness \(Int(percentage.rounded())) percent"
+        return isBoosted ? level + ", boosted" : level
+    }
+
+    /// Distinct glyphs are cached by fraction in 2.5% steps, which is 5% of
+    /// brightness on an XDR panel, and by Boost state: at most 41 x 2 images.
+    private static func cacheKey(fraction: Double, isBoosted: Bool) -> Int {
+        Int((min(max(fraction, 0), 1) * 40).rounded()) * 2 + (isBoosted ? 1 : 0)
+    }
+
+    /// Shared drawings by cache key. Only touched from `image`, on the main actor.
+    @MainActor
+    private static var cache: [Int: NSImage] = [:]
+
+    /// The template image for a fill `fraction` and Boost state. Each call
+    /// returns its own copy, so `description` can differ between callers
+    /// while the drawing is shared.
+    @MainActor
+    static func image(fraction: Double, isBoosted: Bool, description: String? = nil) -> NSImage {
+        let key = cacheKey(fraction: fraction, isBoosted: isBoosted)
+        let base: NSImage
+        if let cached = cache[key] {
+            base = cached
+        } else {
+            base = render(fraction: Double(key / 2) / 40, isBoosted: isBoosted)
+            cache[key] = base
+        }
+        // `copy()` keeps the representations, size and template flag.
+        let image = (base.copy() as? NSImage) ?? base
+        image.isTemplate = true
+        image.accessibilityDescription = description
+        return image
+    }
+
+    @MainActor
+    private static func render(fraction: Double, isBoosted: Bool) -> NSImage {
+        let renderer = ImageRenderer(content: MenuBarGlyph(fraction: fraction, isBoosted: isBoosted))
+        renderer.scale = 2
+        let image: NSImage
+        if let cgImage = renderer.cgImage {
+            image = NSImage(cgImage: cgImage, size: canvasSize)
+        } else {
+            image = NSImage(size: canvasSize)
+        }
+        image.isTemplate = true
+        return image
+    }
+}
+
+/// The sun drawn on the fixed canvas, in black: a template image keeps only
+/// its alpha, and the menu bar supplies the colour.
+struct MenuBarGlyph: View {
+    var fraction: Double
+    var isBoosted: Bool
+
+    private static let badgeKnockoutSize: CGFloat = 9
+    private static let badgeSize: CGFloat = 7
+
+    /// The sun sits this far left of the canvas centre, all the time, so the
+    /// badge has room at the top right without covering the disc.
+    private static let sunOffsetX: CGFloat = -1.5
+
+    var body: some View {
+        let canvas = BrightnessMenuBarIcon.canvasSize
         ZStack {
             Image(systemName: "sun.max")
-                .opacity(0.35)
+                .frame(width: canvas.width, height: canvas.height)
             Image(systemName: "sun.max.fill")
+                // Sized to the canvas first, so the mask's height is measured
+                // against the same frame the disc constants were.
+                .frame(width: canvas.width, height: canvas.height)
                 .mask(alignment: .bottom) {
-                    GeometryReader { proxy in
-                        Rectangle()
-                            .frame(height: proxy.size.height * controller.currentState.iconFillFraction)
-                            .frame(maxHeight: .infinity, alignment: .bottom)
-                    }
+                    Rectangle()
+                        .frame(height: BrightnessMenuBarIcon.fillMaskHeight(
+                            fraction: fraction,
+                            canvasHeight: canvas.height
+                        ))
+                        .frame(maxHeight: .infinity, alignment: .bottom)
                 }
         }
+        .font(.system(size: BrightnessMenuBarIcon.symbolPointSize))
+        .offset(x: Self.sunOffsetX)
+        .frame(width: canvas.width, height: canvas.height)
         .overlay(alignment: .topTrailing) {
-            if controller.currentState.isBoosted {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 8))
-                    .offset(x: 5, y: -3)
+            if isBoosted {
+                // A gap is cut out of the sun around the badge so it never
+                // touches a ray; the cut needs the compositing group below.
+                ZStack {
+                    Circle()
+                        .frame(width: Self.badgeKnockoutSize, height: Self.badgeKnockoutSize)
+                        .blendMode(.destinationOut)
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: Self.badgeSize, weight: .bold))
+                }
             }
         }
+        .foregroundStyle(.black)
+        .compositingGroup()
     }
 }
