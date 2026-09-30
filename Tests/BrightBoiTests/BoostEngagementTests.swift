@@ -603,23 +603,23 @@ struct BoostEngagementTests {
     // MARK: Notification wiring
 
     @Test("the system notifications reach the engagement: the screen saver suspends, its end and a wake re-validate")
-    func notificationsAreWired() async throws {
+    func notificationsAreWired() async {
         let harness = BoostHarness()
         harness.engagement.engage(boostFraction: 1.0)
 
         harness.distributedCenter.post(name: Notification.Name("com.apple.screensaver.didstart"), object: nil)
-        try await Task.sleep(for: .milliseconds(80))
+        await settle { harness.engagement.suspension.contains(.screenSaver) }
         #expect(harness.engagement.suspension.contains(.screenSaver))
         #expect(approximately(harness.tables.liveFactor, 1.0))
 
         harness.distributedCenter.post(name: Notification.Name("com.apple.screensaver.didstop"), object: nil)
-        try await Task.sleep(for: .milliseconds(80))
+        await settle { harness.engagement.suspension.isSuspended == false }
         #expect(harness.engagement.suspension.isSuspended == false)
         #expect(approximately(harness.tables.liveFactor, 2.0))
 
         harness.tables.otherProcessWrites(harness.baseline)
         harness.workspaceCenter.post(name: NSWorkspace.screensDidWakeNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(80))
+        await settle { approximately(harness.tables.liveFactor, 2.0) }
         #expect(approximately(harness.tables.liveFactor, 2.0))
 
         harness.engagement.disengage()
@@ -649,5 +649,16 @@ struct BoostEngagementTests {
         try await Task.sleep(for: .milliseconds(80))
         #expect(harness.engagement.isEngaged == false)
         #expect(harness.tables.live == FakeGammaTables.clamped(harness.baseline))
+    }
+}
+
+/// Waits, up to two seconds, for a main-actor condition that a posted
+/// notification is expected to bring about. Fixed sleeps are too tight when
+/// the whole suite runs at once.
+@MainActor
+func settle(_ condition: () -> Bool) async {
+    let deadline = ContinuousClock.now + .seconds(2)
+    while !condition(), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(10))
     }
 }

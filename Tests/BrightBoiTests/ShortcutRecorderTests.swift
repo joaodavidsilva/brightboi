@@ -170,7 +170,7 @@ struct ShortcutRecorderTests {
     func timesOut() async throws {
         let f = makeFixture(timeout: .milliseconds(60))
         f.recorder.toggle(.raise)
-        try await Task.sleep(for: .milliseconds(300))
+        await settle { f.recorder.armed == nil }
         #expect(f.recorder.armed == nil)
         #expect(f.keyTap.isCapturing == false)
     }
