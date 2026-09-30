@@ -190,8 +190,8 @@ BrightBoi has no analytics and no accounts.
 
 ## Building from source
 
-Runs on macOS 14 (Sonoma) or later on Apple silicon. Building requires Xcode 16 / the Swift 6
-toolchain.
+The app runs on macOS 14 (Sonoma) or later on Apple silicon. Building it requires Xcode 26 or
+later (Swift 6.2), which itself needs macOS 15 or later; the deployment target stays macOS 14.
 
 ```bash
 git clone https://github.com/joaodavidsilva/brightboi.git
@@ -227,7 +227,7 @@ release bundle for local use only.
 
 To publish a release, see the notes at the top of `Packaging/release.sh` and `CHANGELOG.md`.
 
-CI builds and tests every push on macOS 15 (Xcode 16.4) and the newest hosted macOS with its
+CI builds and tests every push on macOS 15 (Xcode 26.0.1) and the newest hosted macOS with its
 latest stable Xcode. macOS 14 is the minimum the app supports but is not covered by CI,
 because GitHub has deprecated its macOS 14 runners.
 

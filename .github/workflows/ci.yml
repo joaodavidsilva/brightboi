@@ -15,11 +15,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest hosted macOS runner still offered (macos-14 is
-          # deprecated) with the oldest Xcode that builds Swift 6 packages,
-          # and the newest runner with its latest stable Xcode.
+          # Building needs Swift 6.2 (isolated deinit), which is Xcode 26.0 and
+          # later. macos-14 is deprecated, so the app's macOS 14 minimum is
+          # not covered here: the oldest runner is macOS 15 with the oldest
+          # Xcode that has Swift 6.2, and the newest runner has its latest
+          # stable Xcode.
           - os: "15"
-            xcode: "16.4"
+            xcode: "26.0.1"
           - os: "26"
             xcode: latest-stable
     steps:
