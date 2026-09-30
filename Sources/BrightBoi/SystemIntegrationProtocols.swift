@@ -246,6 +246,17 @@ protocol KeyTapControlling {
 
     /// Calls `onChange` whenever `conflict` changes.
     func observeConflicts(_ onChange: @escaping () -> Void)
+
+    /// Hands the next key combo the user presses to `onCapture` instead of
+    /// acting on it, for the shortcut recorder. Combos in use by the remap are
+    /// released so they can be recorded again, bare F1/F2 arrive as `.f1` /
+    /// `.f2` without changing the brightness, and capture works whether or not
+    /// the remap is running. Needs the same permission the tap needs; without
+    /// it only ordinary key presses reach the recorder. Ends with `endCapture`.
+    func beginCapture(_ onCapture: @escaping (KeyCombo) -> Void)
+
+    /// Leaves capture mode and puts the running remap back.
+    func endCapture()
 }
 
 /// Reads the accessibility display options that change how the display's

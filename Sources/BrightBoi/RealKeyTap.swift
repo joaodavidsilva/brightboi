@@ -5,10 +5,12 @@ import Foundation
 /// Real `KeyTapControlling`. The configured Key Remap reaches BrightBoi two
 /// ways, chosen per direction by `KeyTapPlan`:
 ///
-/// - The default bare F1/F2 keys arrive as `NX_SYSDEFINED` media-key events
-///   (macOS's own mechanism), in both keyboard modes: Fn+F1/F2 in
-///   standard-function-key mode is the same media event. They are caught by a
-///   session-level `CGEventTap`, which needs the Accessibility permission.
+/// - The bare F1/F2 keys arrive as `NX_SYSDEFINED` media-key events (macOS's
+///   own mechanism), in both keyboard modes: Fn+F1/F2 in
+///   standard-function-key mode is the same media event. They are read as the
+///   combos F1 (brightness down) and F2 (brightness up), so either direction
+///   can be given either key. They are caught by a session-level
+///   `CGEventTap`, which needs the Accessibility permission.
 ///   F1 and F2 pressed as ordinary function keys are never touched, so they
 ///   keep working in other apps.
 /// - Any other combo is registered as a system hot key (`CarbonHotKeys`),
@@ -29,6 +31,11 @@ import Foundation
 /// default setup no ordinary key event ever reaches BrightBoi, and a remap
 /// made only of custom combos installs no tap at all.
 ///
+/// While the Settings recorder is armed the tap is in capture mode: the hot
+/// keys are released so a combo already in use reaches the recorder, the tap
+/// listens to media keys and key-downs whether or not Key Remap is on, and the
+/// next key press is handed to the recorder instead of being acted on.
+///
 /// `@MainActor`: satisfies `KeyTapControlling`'s isolation, and lets
 /// `deinit` stop everything synchronously. The tap callback itself is a plain
 /// C function pointer with no isolation the compiler can see; it always
@@ -46,6 +53,14 @@ final class RealKeyTap: KeyTapControlling {
     private var keyDownFallback: [(press: BrightnessController.KeyPress, combo: KeyCombo)] = []
     private var onKeyPress: ((BrightnessController.KeyPress) -> Bool)?
     private var repeatLimiter = KeyRepeatLimiter()
+
+    /// Whether the recorder has asked for capture mode, until `endCapture`.
+    private var isCapturing = false
+    /// Takes the next captured combo; cleared once it has been delivered.
+    private var captureHandler: ((KeyCombo) -> Void)?
+    /// Set once a combo has been handed over, so the auto-repeats of the held
+    /// key keep being swallowed until the recorder ends the capture.
+    private var captureDelivered = false
 
     private let hotKeys = CarbonHotKeys()
     private let interceptionDetector = KeyInterceptionDetector()
@@ -75,15 +90,9 @@ final class RealKeyTap: KeyTapControlling {
     }
 
     func start(remap: KeyRemapShortcut, onKeyPress: @escaping (BrightnessController.KeyPress) -> Bool) {
-        let plan = KeyTapPlan(remap: remap)
-        self.plan = plan
+        self.plan = KeyTapPlan(remap: remap)
         self.onKeyPress = onKeyPress
-
-        keyDownFallback = hotKeys.register(plan.hotKeys) { [weak self] press in
-            self?.deliverHotKeyPress(press)
-        }
-        reconcileTap()
-        reconcileInterceptionDetector()
+        applyPlan()
         if !isActive {
             Log.keyTap.error("The key tap is not active (Accessibility permission likely not granted yet)")
         }
@@ -92,11 +101,45 @@ final class RealKeyTap: KeyTapControlling {
     func stop() {
         plan = nil
         onKeyPress = nil
-        keyDownFallback = []
-        hotKeys.unregisterAll()
-        removeTap()
-        interceptionDetector.stop()
-        setConflict(nil)
+        applyPlan()
+    }
+
+    /// Makes the hot keys, the tap and the conflict detector match the current
+    /// plan, or nothing when there is none. The hot keys stay released while
+    /// the recorder is capturing.
+    private func applyPlan() {
+        if let plan, !isCapturing {
+            keyDownFallback = hotKeys.register(plan.hotKeys) { [weak self] press in
+                self?.deliverHotKeyPress(press)
+            }
+        } else {
+            keyDownFallback = []
+            hotKeys.unregisterAll()
+        }
+        reconcileTap()
+        if plan != nil {
+            reconcileInterceptionDetector()
+        } else {
+            interceptionDetector.stop()
+            setConflict(nil)
+        }
+    }
+
+    // MARK: - Capture
+
+    func beginCapture(_ onCapture: @escaping (KeyCombo) -> Void) {
+        isCapturing = true
+        captureDelivered = false
+        captureHandler = onCapture
+        applyPlan()
+    }
+
+    func endCapture() {
+        guard isCapturing else { return }
+        isCapturing = false
+        captureDelivered = false
+        captureHandler = nil
+        applyPlan()
     }
 
     // MARK: - Event tap
@@ -106,10 +149,10 @@ final class RealKeyTap: KeyTapControlling {
     /// register as a hot key.
     private var requiredMask: CGEventMask {
         var mask: CGEventMask = 0
-        if plan?.usesMediaKeys == true {
+        if plan?.usesMediaKeys == true || isCapturing {
             mask |= 1 << CGEventMask(NSEvent.EventType.systemDefined.rawValue)
         }
-        if !keyDownFallback.isEmpty {
+        if !keyDownFallback.isEmpty || isCapturing {
             mask |= 1 << CGEventMask(CGEventType.keyDown.rawValue)
         }
         return mask
@@ -208,6 +251,10 @@ final class RealKeyTap: KeyTapControlling {
             return Unmanaged.passUnretained(cgEvent)
         }
 
+        if isCapturing {
+            return handleCapture(type: type, cgEvent: cgEvent)
+        }
+
         guard let plan, let onKeyPress else { return Unmanaged.passUnretained(cgEvent) }
 
         let press: BrightnessController.KeyPress?
@@ -247,6 +294,50 @@ final class RealKeyTap: KeyTapControlling {
         // the key exactly as it was sent.
         guard onKeyPress(press) else { return Unmanaged.passUnretained(cgEvent) }
         repeatLimiter.recordApplied(at: now)
+        return nil
+    }
+
+    /// While capturing, the next media key or key-down becomes the recorded
+    /// combo and is swallowed, so it neither steps the brightness nor reaches
+    /// another app. Escape, Tab and anything typed while another app is in
+    /// front pass through untouched.
+    private func handleCapture(type: CGEventType, cgEvent: CGEvent) -> Unmanaged<CGEvent>? {
+        guard NSApp.isActive else { return Unmanaged.passUnretained(cgEvent) }
+        guard let handler = captureHandler else {
+            // The combo is already taken: swallow the held key's repeats too.
+            guard captureDelivered, type == .keyDown || type.rawValue == NSEvent.EventType.systemDefined.rawValue else {
+                return Unmanaged.passUnretained(cgEvent)
+            }
+            if type == .keyDown { return nil }
+            if let nsEvent = NSEvent(cgEvent: cgEvent),
+               KeyTapMatcher.mediaKeyCombo(subtype: nsEvent.subtype.rawValue, data1: nsEvent.data1, flags: cgEvent.flags) != nil {
+                return nil
+            }
+            return Unmanaged.passUnretained(cgEvent)
+        }
+
+        let combo: KeyCombo?
+        if type.rawValue == NSEvent.EventType.systemDefined.rawValue {
+            guard let nsEvent = NSEvent(cgEvent: cgEvent) else { return Unmanaged.passUnretained(cgEvent) }
+            combo = KeyTapMatcher.mediaKeyCombo(subtype: nsEvent.subtype.rawValue, data1: nsEvent.data1, flags: cgEvent.flags)
+            if combo != nil {
+                interceptionDetector.noteReceivedByTap(timestamp: cgEvent.timestamp)
+            }
+        } else if type == .keyDown {
+            combo = KeyTapMatcher.capturedCombo(
+                keyCode: cgEvent.getIntegerValueField(.keyboardEventKeycode),
+                flags: cgEvent.flags
+            )
+        } else {
+            combo = nil
+        }
+        guard let combo else { return Unmanaged.passUnretained(cgEvent) }
+
+        // One combo per capture. Handed over on the next turn of the run loop,
+        // because the recorder ends the capture, which removes this tap.
+        captureHandler = nil
+        captureDelivered = true
+        Task { @MainActor in handler(combo) }
         return nil
     }
 

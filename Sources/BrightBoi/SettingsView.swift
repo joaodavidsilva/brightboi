@@ -11,10 +11,19 @@ struct SettingsView: View {
     var permissions: PermissionsModel
 
     @Environment(\.colorScheme) private var colorScheme
+    @State private var recorder: ShortcutRecorder
+
+    init(controller: BrightnessController, permissions: PermissionsModel, recorder: ShortcutRecorder? = nil) {
+        self.controller = controller
+        self.permissions = permissions
+        _recorder = State(initialValue: recorder ?? ShortcutRecorder(controller: controller))
+    }
 
     var body: some View {
         let state = controller.currentState
         let palette = BrightnessMenuContent.Palette(colorScheme: colorScheme)
+        // Shortcut labels follow the keyboard layout, so redraw when it changes.
+        let _ = KeyboardLayoutNames.shared.generation
 
         VStack(alignment: .leading, spacing: 18) {
             generalSection(state: state, palette: palette)
@@ -29,6 +38,7 @@ struct SettingsView: View {
         }
         .padding(EdgeInsets(top: 20, leading: 22, bottom: 18, trailing: 22))
         .frame(width: 480)
+        .onDisappear { recorder.teardown() }
         .onAppear {
             controller.refreshLaunchAtLoginStatus()
             controller.syncFromDisplay()
@@ -87,14 +97,15 @@ struct SettingsView: View {
 
                     rowDivider(palette: palette)
 
-                    shortcutRow(title: "Raise", combo: state.keyRemapShortcut.raise, palette: palette) { newCombo in
-                        controller.setKeyRemapShortcut(KeyRemapShortcut(raise: newCombo, lower: state.keyRemapShortcut.lower))
-                    }
+                    shortcutRow(press: .raise, combo: state.keyRemapShortcut.raise, palette: palette)
 
                     rowDivider(palette: palette)
 
-                    shortcutRow(title: "Lower", combo: state.keyRemapShortcut.lower, palette: palette) { newCombo in
-                        controller.setKeyRemapShortcut(KeyRemapShortcut(raise: state.keyRemapShortcut.raise, lower: newCombo))
+                    shortcutRow(press: .lower, combo: state.keyRemapShortcut.lower, palette: palette)
+
+                    if state.keyRemapShortcut != .defaultShortcut {
+                        rowDivider(palette: palette)
+                        resetShortcutRow(palette: palette)
                     }
                 }
                 .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
@@ -192,7 +203,7 @@ struct SettingsView: View {
     private func remapToggleTitle(_ shortcut: KeyRemapShortcut) -> String {
         shortcut == .defaultShortcut
             ? "Let BrightBoi own F1 / F2"
-            : "Let BrightBoi own \(shortcut.raise.displayString) / \(shortcut.lower.displayString)"
+            : "Let BrightBoi own \(shortcut.lower.displayString) / \(shortcut.raise.displayString)"
     }
 
     // MARK: - Boost Ceiling
@@ -264,7 +275,7 @@ struct SettingsView: View {
                 .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
                 .animation(.default, value: permissions.accessibilityGranted)
 
-                Text("Needed only for the F1/F2 keys. The slider and custom shortcuts work without it.")
+                Text("Needed only for the brightness keys. The slider and custom shortcuts work without it.")
                     .font(.system(size: 11))
                     .foregroundStyle(palette.secondaryText)
             }
@@ -345,13 +356,31 @@ struct SettingsView: View {
         .padding(.vertical, 11)
     }
 
-    private func shortcutRow(title: String, combo: KeyCombo, palette: BrightnessMenuContent.Palette, onChange: @escaping (KeyCombo) -> Void) -> some View {
+    private func shortcutRow(press: BrightnessController.KeyPress, combo: KeyCombo, palette: BrightnessMenuContent.Palette) -> some View {
         HStack {
-            Text(title)
+            Text(press.label)
                 .font(.system(size: 13))
                 .foregroundStyle(palette.rowText)
             Spacer()
-            ShortcutRecorderView(combo: combo, palette: palette, onChange: onChange)
+            ShortcutPill(press: press, combo: combo, recorder: recorder, palette: palette)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 9)
+    }
+
+    /// Shown only while the shortcut differs from the default, so there is
+    /// always a way back to F1 / F2.
+    private func resetShortcutRow(palette: BrightnessMenuContent.Palette) -> some View {
+        HStack {
+            Spacer()
+            Button("Reset to F1 / F2") {
+                controller.resetKeyRemapShortcut()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(Color.accentColor)
+            .contentShape(Rectangle())
+            .accessibilityHint("Restores F1 for Lower and F2 for Raise")
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 9)
@@ -362,80 +391,5 @@ struct SettingsView: View {
             .fill(palette.divider)
             .frame(height: 0.5)
             .padding(.leading, 13)
-    }
-}
-
-/// A small clickable pill that records the next key combination pressed
-/// while active — used for both the Raise and Lower rows. Rejects any combo without a modifier key unless it's F1/F2 itself,
-/// briefly showing a rejection hint instead of applying it.
-private struct ShortcutRecorderView: View {
-    var combo: KeyCombo
-    var palette: BrightnessMenuContent.Palette
-    var onChange: (KeyCombo) -> Void
-
-    @State private var isRecording = false
-    @State private var isRejecting = false
-    @State private var localMonitor: Any?
-
-    private static let escapeKeyCode: UInt16 = 0x35
-
-    var body: some View {
-        Button {
-            startRecording()
-        } label: {
-            Text(label)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(isRejecting ? Color.red : palette.rowText)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .onDisappear { stopRecording() }
-    }
-
-    private var label: String {
-        if isRejecting { return "Needs a modifier" }
-        if isRecording { return "Press a key…" }
-        return combo.displayString
-    }
-
-    private func startRecording() {
-        guard !isRecording else { return }
-        isRecording = true
-
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            stopRecording()
-
-            guard event.keyCode != Self.escapeKeyCode else { return nil }
-
-            let candidate = KeyCombo(
-                modifiers: KeyCombo.Modifiers(nsEventModifierFlags: event.modifierFlags),
-                keyCode: Int64(event.keyCode)
-            )
-
-            if candidate.isValidRemap {
-                onChange(candidate)
-            } else {
-                flashRejection()
-            }
-            return nil
-        }
-    }
-
-    private func stopRecording() {
-        isRecording = false
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-        }
-        localMonitor = nil
-    }
-
-    private func flashRejection() {
-        isRejecting = true
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            isRejecting = false
-        }
     }
 }

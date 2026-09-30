@@ -1092,8 +1092,8 @@ struct BrightnessControllerTests {
     @Test("restores a persisted Key Remap shortcut and enabled flag on init")
     func restoresPersistedKeyRemap() {
         let customShortcut = KeyRemapShortcut(
-            raise: KeyCombo(modifiers: [.option, .shift], keyCode: 0x1E),
-            lower: KeyCombo(modifiers: [.option, .shift], keyCode: 0x21)
+            raise: KeyCombo(modifiers: [.control, .option], keyCode: 0x1E),
+            lower: KeyCombo(modifiers: [.control, .option], keyCode: 0x21)
         )
         let fixture = makeFixture(storedKeyRemapEnabled: false, storedKeyRemapShortcut: customShortcut)
         #expect(fixture.controller.currentState.keyRemapEnabled == false)
@@ -1146,8 +1146,8 @@ struct BrightnessControllerTests {
     func changingShortcutRestartsTapWhenEnabled() {
         let fixture = makeFixture()
         let newShortcut = KeyRemapShortcut(
-            raise: KeyCombo(modifiers: [.option, .shift], keyCode: 0x1E),
-            lower: KeyCombo(modifiers: [.option, .shift], keyCode: 0x21)
+            raise: KeyCombo(modifiers: [.control, .option], keyCode: 0x1E),
+            lower: KeyCombo(modifiers: [.control, .option], keyCode: 0x21)
         )
         fixture.controller.setKeyRemapShortcut(newShortcut)
         #expect(fixture.controller.currentState.keyRemapShortcut == newShortcut)
@@ -1171,13 +1171,105 @@ struct BrightnessControllerTests {
     func changingShortcutWhileDisabledDoesNotStartTap() {
         let fixture = makeFixture(storedKeyRemapEnabled: false)
         let newShortcut = KeyRemapShortcut(
-            raise: KeyCombo(modifiers: [.command], keyCode: 0x00),
-            lower: KeyCombo(modifiers: [.command], keyCode: 0x01)
+            raise: KeyCombo(modifiers: [.command], keyCode: 0x0B),
+            lower: KeyCombo(modifiers: [.command], keyCode: 0x02)
         )
         fixture.controller.setKeyRemapShortcut(newShortcut)
         #expect(fixture.keyTap.startCallCount == 0)
         #expect(fixture.controller.currentState.keyRemapShortcut == newShortcut)
         #expect(fixture.persistence.storedKeyRemapShortcut == newShortcut)
+    }
+
+    @Test("a stored shortcut the rules refuse falls back to F1/F2 at launch, and the fallback is stored")
+    func invalidStoredShortcutFallsBackAndIsPersisted() {
+        let invalid = KeyRemapShortcut(
+            raise: KeyCombo(modifiers: [], keyCode: 0x00),
+            lower: KeyCombo(modifiers: [], keyCode: 0x0B)
+        )
+        let fixture = makeFixture(storedKeyRemapShortcut: invalid)
+        #expect(fixture.controller.currentState.keyRemapShortcut == .defaultShortcut)
+        #expect(fixture.keyTap.lastStartedRemap == .defaultShortcut)
+        #expect(fixture.persistence.storedKeyRemapShortcut == .defaultShortcut)
+    }
+
+    @Test("a stored shortcut with the same combo on both directions falls back to F1/F2")
+    func duplicateStoredShortcutFallsBack() {
+        let combo = KeyCombo(modifiers: [.control, .option], keyCode: 0x7E)
+        let fixture = makeFixture(storedKeyRemapShortcut: KeyRemapShortcut(raise: combo, lower: combo))
+        #expect(fixture.controller.currentState.keyRemapShortcut == .defaultShortcut)
+    }
+
+    @Test("setKeyRemapShortcut refuses an invalid shortcut without persisting it or restarting the tap")
+    func invalidShortcutIsRefusedWithoutSideEffects() {
+        let fixture = makeFixture()
+        let before = fixture.keyTap.startCallCount
+        let invalid = KeyRemapShortcut(raise: KeyCombo(modifiers: [.shift], keyCode: 0x00), lower: .f1)
+
+        #expect(fixture.controller.setKeyRemapShortcut(invalid) == false)
+        #expect(fixture.controller.currentState.keyRemapShortcut == .defaultShortcut)
+        #expect(fixture.keyTap.startCallCount == before)
+        #expect(fixture.persistence.storedKeyRemapShortcut == nil)
+    }
+
+    @Test("F1 and F2 can be swapped, and the tap restarts with the swap")
+    func swappedFunctionKeysAreAccepted() {
+        let fixture = makeFixture()
+        let swapped = KeyRemapShortcut(raise: .f1, lower: .f2)
+        #expect(fixture.controller.setKeyRemapShortcut(swapped))
+        #expect(fixture.keyTap.lastStartedRemap == swapped)
+    }
+
+    @Test("setKeyRemapCombo for Raise then Lower keeps both, persisted and started")
+    func setComboForBothDirectionsKeepsBoth() {
+        let fixture = makeFixture()
+        let raise = KeyCombo(modifiers: [.control, .option], keyCode: 0x7E)
+        let lower = KeyCombo(modifiers: [.control, .option], keyCode: 0x7D)
+
+        #expect(fixture.controller.setKeyRemapCombo(raise, for: .raise))
+        #expect(fixture.controller.setKeyRemapCombo(lower, for: .lower))
+
+        let expected = KeyRemapShortcut(raise: raise, lower: lower)
+        #expect(fixture.controller.currentState.keyRemapShortcut == expected)
+        #expect(fixture.persistence.storedKeyRemapShortcut == expected)
+        #expect(fixture.keyTap.lastStartedRemap == expected)
+    }
+
+    @Test("setKeyRemapCombo refuses a combo that duplicates the other direction")
+    func setComboRefusesDuplicate() {
+        let fixture = makeFixture()
+        #expect(fixture.controller.setKeyRemapCombo(.f1, for: .raise) == false)
+        #expect(fixture.controller.currentState.keyRemapShortcut == .defaultShortcut)
+    }
+
+    @Test("resetKeyRemapShortcut restores F1/F2, persists it and restarts the tap")
+    func resetRestoresDefault() {
+        let custom = KeyRemapShortcut(
+            raise: KeyCombo(modifiers: [.control, .option], keyCode: 0x7E),
+            lower: KeyCombo(modifiers: [.control, .option], keyCode: 0x7D)
+        )
+        let fixture = makeFixture(storedKeyRemapShortcut: custom)
+        fixture.controller.resetKeyRemapShortcut()
+
+        #expect(fixture.controller.currentState.keyRemapShortcut == .defaultShortcut)
+        #expect(fixture.persistence.storedKeyRemapShortcut == .defaultShortcut)
+        #expect(fixture.keyTap.lastStartedRemap == .defaultShortcut)
+    }
+
+    @Test("shortcut capture starts and ends on the key tap, with the remap on or off")
+    func shortcutCaptureReachesKeyTap() {
+        for enabled in [true, false] {
+            let fixture = makeFixture(storedKeyRemapEnabled: enabled)
+            var captured: KeyCombo?
+            fixture.controller.beginShortcutCapture { captured = $0 }
+            #expect(fixture.keyTap.isCapturing)
+
+            fixture.keyTap.simulateCapture(.f2)
+            #expect(captured == .f2)
+
+            fixture.controller.endShortcutCapture()
+            #expect(fixture.keyTap.endCaptureCallCount == 1)
+            #expect(fixture.keyTap.isCapturing == false)
+        }
     }
 
     // MARK: Key Remap: a tap that is down, and retrying it
@@ -1200,7 +1292,7 @@ struct BrightnessControllerTests {
     @Test("retryKeyTapIfNeeded starts the tap again with the persisted shortcut")
     func retryStartsTapWithPersistedShortcut() {
         let shortcut = KeyRemapShortcut(
-            raise: KeyCombo(modifiers: [.option, .shift], keyCode: 0x1E),
+            raise: KeyCombo(modifiers: [.control, .option], keyCode: 0x1E),
             lower: .f1
         )
         let fixture = makeFixture(storedKeyRemapShortcut: shortcut, stubbedKeyTapStarts: false)

@@ -247,6 +247,28 @@ final class FakeKeyTap: KeyTapControlling {
         conflictObservers.append(onChange)
     }
 
+    private(set) var beginCaptureCallCount = 0
+    private(set) var endCaptureCallCount = 0
+    private var captureHandler: ((KeyCombo) -> Void)?
+    var isCapturing: Bool { captureHandler != nil }
+
+    func beginCapture(_ onCapture: @escaping (KeyCombo) -> Void) {
+        beginCaptureCallCount += 1
+        captureHandler = onCapture
+    }
+
+    func endCapture() {
+        endCaptureCallCount += 1
+        captureHandler = nil
+    }
+
+    /// Simulates the tap capturing `combo` while the recorder is armed.
+    func simulateCapture(_ combo: KeyCombo) {
+        let handler = captureHandler
+        captureHandler = nil
+        handler?(combo)
+    }
+
     /// Simulates a real key tap reporting a press, exercising the same
     /// callback path `RealKeyTap` drives in production. Returns whether the
     /// controller took the press: `true` means the real tap would swallow the

@@ -19,7 +19,7 @@ import Observation
 @MainActor
 @Observable
 final class BrightnessController {
-    /// Percentage bounds per the spec: 0–100 is Nominal Brightness,
+    /// Percentage bounds: 0–100 is Nominal Brightness,
     /// 100–200 is Extended Brightness / Boost. `nonisolated` because these
     /// are read from plain data code with no main-thread requirement of its
     /// own — `RealBrightnessPersistence`'s fresh-install fallback,
@@ -50,7 +50,7 @@ final class BrightnessController {
 
     /// Absolute threshold on the 0...200 scale, not relative to a lowered
     /// Boost Ceiling — if the ceiling is already below this, the battery
-    /// advisory simply never fires. See the spec's Battery advisory decision.
+    /// advisory simply never fires.
     nonisolated static let batteryAdvisoryThresholdPercentage: Double = 170
 
     /// The thermal advisory's heuristic "delivered %" offsets — see
@@ -315,8 +315,16 @@ final class BrightnessController {
         let keyRemapEnabled = persistence.loadKeyRemapEnabled() ?? true
         self.keyRemapEnabled = keyRemapEnabled
 
-        let keyRemapShortcut = persistence.loadKeyRemapShortcut() ?? .defaultShortcut
+        // A stored shortcut the rules no longer allow (a bare letter written
+        // by hand, a combo from an older, looser version) would make the tap
+        // swallow ordinary typing, so it is replaced by the default, and the
+        // replacement is stored.
+        let storedShortcut = persistence.loadKeyRemapShortcut()
+        let keyRemapShortcut = storedShortcut.flatMap { $0.isValid ? $0 : nil } ?? .defaultShortcut
         self.keyRemapShortcut = keyRemapShortcut
+        if storedShortcut != nil, storedShortcut != keyRemapShortcut {
+            persistence.save(keyRemapShortcut: keyRemapShortcut)
+        }
 
         let autoBrightnessTakeoverEnabled = persistence.loadAutoBrightnessTakeoverEnabled() ?? true
         self.autoBrightnessTakeoverEnabled = autoBrightnessTakeoverEnabled
@@ -621,16 +629,48 @@ final class BrightnessController {
         retryKeyTapIfNeeded()
     }
 
-    /// Restarts the tap live with the new combo when the remap is currently
-    /// enabled; when disabled, just persists the new combo for next time it's
-    /// turned on.
-    func setKeyRemapShortcut(_ shortcut: KeyRemapShortcut) {
+    /// Restarts the tap live with the new shortcut when the remap is currently
+    /// enabled; when disabled, just persists the new shortcut for next time
+    /// it's turned on. Refuses a shortcut the rules don't allow (see
+    /// `KeyRemapShortcut.isValid`), changing and persisting nothing, and
+    /// returns whether it was applied.
+    @discardableResult
+    func setKeyRemapShortcut(_ shortcut: KeyRemapShortcut) -> Bool {
+        guard shortcut.isValid else { return false }
         keyRemapShortcut = shortcut
         persistence.save(keyRemapShortcut: shortcut)
         currentState = updatedState(percentage: currentState.percentage)
         if keyRemapEnabled {
             startKeyTap(remap: shortcut)
         }
+        return true
+    }
+
+    /// Assigns `combo` to one direction, leaving the other as the controller
+    /// currently has it, so two changes in a row both stick. Returns whether
+    /// it was applied; see `setKeyRemapShortcut`.
+    @discardableResult
+    func setKeyRemapCombo(_ combo: KeyCombo, for press: KeyPress) -> Bool {
+        setKeyRemapShortcut(keyRemapShortcut.replacing(press, with: combo))
+    }
+
+    /// Puts the brightness keys back on F1 and F2.
+    func resetKeyRemapShortcut() {
+        setKeyRemapShortcut(.defaultShortcut)
+    }
+
+    /// Hands the next key combo the user presses to `onCapture`, for the
+    /// Settings shortcut recorder. A combo the remap already uses can be
+    /// recorded again, and bare F1 and F2 arrive as `.f1` and `.f2` without
+    /// changing the brightness. Works whether or not Key Remap is on. Call
+    /// `endShortcutCapture` when done.
+    func beginShortcutCapture(_ onCapture: @escaping (KeyCombo) -> Void) {
+        keyTap.beginCapture(onCapture)
+    }
+
+    /// Ends `beginShortcutCapture` and puts the running remap back.
+    func endShortcutCapture() {
+        keyTap.endCapture()
     }
 
     /// Drives the Settings toggle "Turn off macOS auto-brightness while

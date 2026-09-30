@@ -48,6 +48,51 @@ struct KeyTapMatchingTests {
         #expect(plan.hotKeys.map(\.press) == [.raise])
     }
 
+    @Test("a swapped remap sends brightness down to Raise and brightness up to Lower")
+    func swappedPlanMapsMediaKeys() {
+        let plan = KeyTapPlan(remap: KeyRemapShortcut(raise: .f1, lower: .f2))
+        #expect(plan.usesMediaKeys)
+        #expect(plan.hotKeys.isEmpty)
+        #expect(KeyTapMatcher.mediaKeyPress(subtype: 8, data1: data1(keyCode: 3), flags: [], plan: plan) == .raise)
+        #expect(KeyTapMatcher.mediaKeyPress(subtype: 8, data1: data1(keyCode: 2), flags: [], plan: plan) == .lower)
+    }
+
+    @Test("Raise on brightness down beside a custom Lower leaves brightness up to macOS")
+    func mixedSwappedPlan() {
+        let lower = KeyCombo(modifiers: [.control, .option], keyCode: 0x7D)
+        let plan = KeyTapPlan(remap: KeyRemapShortcut(raise: .f1, lower: lower))
+        #expect(KeyTapMatcher.mediaKeyPress(subtype: 8, data1: data1(keyCode: 3), flags: [], plan: plan) == .raise)
+        #expect(KeyTapMatcher.mediaKeyPress(subtype: 8, data1: data1(keyCode: 2), flags: [], plan: plan) == nil)
+        #expect(plan.hotKeys.map(\.combo) == [lower])
+    }
+
+    @Test("media events read as F1 for down and F2 for up, under the same modifier policy")
+    func mediaKeyCombos() {
+        #expect(KeyTapMatcher.mediaKeyCombo(subtype: 8, data1: data1(keyCode: 3), flags: []) == .f1)
+        #expect(KeyTapMatcher.mediaKeyCombo(subtype: 8, data1: data1(keyCode: 2), flags: [.maskShift]) == .f2)
+        #expect(KeyTapMatcher.mediaKeyCombo(subtype: 8, data1: data1(keyCode: 2), flags: [.maskControl]) == nil)
+        #expect(KeyTapMatcher.mediaKeyCombo(subtype: 8, data1: data1(keyCode: 2, down: false), flags: []) == nil)
+        #expect(KeyTapMatcher.mediaKeyCombo(subtype: 8, data1: data1(keyCode: 0), flags: []) == nil)
+    }
+
+    // MARK: Capture
+
+    @Test("a captured key-down carries its modifiers")
+    func capturedKeyDown() {
+        let combo = KeyTapMatcher.capturedCombo(keyCode: 0x7E, flags: [.maskControl, .maskAlternate])
+        #expect(combo == KeyCombo(modifiers: [.control, .option], keyCode: 0x7E))
+    }
+
+    @Test("Escape and Tab belong to the recorder, not to a shortcut")
+    func recorderControlKeys() {
+        #expect(KeyTapMatcher.capturedCombo(keyCode: 0x35, flags: []) == nil)
+        #expect(KeyTapMatcher.capturedCombo(keyCode: 0x30, flags: []) == nil)
+        #expect(KeyTapMatcher.capturedCombo(keyCode: 0x30, flags: [.maskShift]) == nil)
+        // With other modifiers they are ordinary candidates, refused or not by the rules.
+        #expect(KeyTapMatcher.capturedCombo(keyCode: 0x30, flags: [.maskControl]) != nil)
+        #expect(KeyTapMatcher.capturedCombo(keyCode: 0x35, flags: [.maskCommand]) != nil)
+    }
+
     // MARK: Media keys
 
     @Test("a bare brightness-up media event raises")
@@ -245,5 +290,15 @@ struct KeyTapConflictTests {
         #expect(KeyTapConflict(appName: "Lunar").message.hasPrefix("Lunar is intercepting the brightness keys"))
         #expect(KeyTapConflict(appName: nil).message.hasPrefix("Another app is intercepting the brightness keys"))
         #expect(KeyTapConflict(appName: nil).message.contains("Turn off brightness-key handling in that app"))
+    }
+}
+
+@Suite("Captured key-downs of the brightness keys")
+struct CapturedBrightnessKeyTests {
+    @Test("a bare F1 or F2 key-down is not a captured combo")
+    func bareFunctionKeyDown() {
+        #expect(KeyTapMatcher.capturedCombo(keyCode: 0x7A, flags: []) == nil)
+        #expect(KeyTapMatcher.capturedCombo(keyCode: 0x78, flags: [.maskSecondaryFn]) == nil)
+        #expect(KeyTapMatcher.capturedCombo(keyCode: 0x7A, flags: [.maskControl]) != nil)
     }
 }

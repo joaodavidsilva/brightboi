@@ -1,15 +1,20 @@
 import CoreGraphics
 import Foundation
 
-/// How a `KeyRemapShortcut` reaches BrightBoi. The bare F1/F2 keys only ever
+/// How a `KeyRemapShortcut` reaches BrightBoi. The brightness keys only ever
 /// arrive as `NX_SYSDEFINED` media-key events, which need an event tap (and so
-/// the Accessibility permission). Any other combo is registered as a system
-/// hot key, which macOS delivers even while Secure Keyboard Entry hides
-/// ordinary key events from every tap, and which needs no permission at all.
+/// the Accessibility permission). They are read as the combos F1 (brightness
+/// down) and F2 (brightness up), so either direction can be given either key.
+/// Any other combo is registered as a system hot key, which macOS delivers
+/// even while Secure Keyboard Entry hides ordinary key events from every tap,
+/// and which needs no permission at all.
 struct KeyTapPlan: Equatable {
-    /// The Raise direction is still on its default, the brightness-up media key.
+    private let raise: KeyCombo
+    private let lower: KeyCombo
+
+    /// The Raise direction listens to a brightness media key (F1 or F2).
     let raiseMediaKey: Bool
-    /// The Lower direction is still on its default, the brightness-down media key.
+    /// The Lower direction listens to a brightness media key (F1 or F2).
     let lowerMediaKey: Bool
     /// A combo for the Raise direction that is neither F1 nor F2.
     let raiseHotKey: KeyCombo?
@@ -18,14 +23,24 @@ struct KeyTapPlan: Equatable {
     let lowerHotKey: KeyCombo?
 
     init(remap: KeyRemapShortcut) {
-        raiseMediaKey = remap.raise == .f2
-        lowerMediaKey = remap.lower == .f1
-        raiseHotKey = Self.isCustom(remap.raise) ? remap.raise : nil
-        lowerHotKey = Self.isCustom(remap.lower) && remap.lower != remap.raise ? remap.lower : nil
+        raise = remap.raise
+        lower = remap.lower
+        raiseMediaKey = Self.isMediaKey(remap.raise)
+        lowerMediaKey = Self.isMediaKey(remap.lower)
+        raiseHotKey = Self.isMediaKey(remap.raise) ? nil : remap.raise
+        lowerHotKey = !Self.isMediaKey(remap.lower) && remap.lower != remap.raise ? remap.lower : nil
     }
 
     /// Whether any direction listens to the brightness media keys.
     var usesMediaKeys: Bool { raiseMediaKey || lowerMediaKey }
+
+    /// The direction a brightness media key stands for under this remap, given
+    /// as the combo it reads as (`.f1` for brightness down, `.f2` for up).
+    func mediaKeyPress(for combo: KeyCombo) -> BrightnessController.KeyPress? {
+        if raiseMediaKey, combo == raise { return .raise }
+        if lowerMediaKey, combo == lower { return .lower }
+        return nil
+    }
 
     /// The custom combos to register, each with the press it triggers.
     var hotKeys: [(press: BrightnessController.KeyPress, combo: KeyCombo)] {
@@ -35,8 +50,8 @@ struct KeyTapPlan: Equatable {
         return result
     }
 
-    private static func isCustom(_ combo: KeyCombo) -> Bool {
-        combo != .f1 && combo != .f2
+    private static func isMediaKey(_ combo: KeyCombo) -> Bool {
+        combo == .f1 || combo == .f2
     }
 }
 
@@ -78,8 +93,23 @@ enum KeyTapMatcher {
         return held.isEmpty || held == [.maskShift] || held == [.maskAlternate, .maskShift]
     }
 
+    /// The combo a brightness media key-down reads as: `.f1` for brightness
+    /// down, `.f2` for brightness up. `nil` for anything else, including a
+    /// key-up and a press carrying a modifier macOS keeps for itself.
+    static func mediaKeyCombo(subtype: Int16, data1: Int, flags: CGEventFlags) -> KeyCombo? {
+        guard subtype == auxControlButtonsSubtype,
+              ((data1 & keyStateMask) >> keyStateShift) == keyDownState,
+              acceptsModifiers(flags) else { return nil }
+
+        switch Int32((data1 & keyCodeMask) >> keyCodeShift) {
+        case brightnessUpKeyCode: return .f2
+        case brightnessDownKeyCode: return .f1
+        default: return nil
+        }
+    }
+
     /// The press a brightness media key stands for, or `nil` when it is not a
-    /// key-down of a direction still on its default, or carries a modifier
+    /// key-down of a direction listening to that key, or carries a modifier
     /// macOS keeps for itself.
     static func mediaKeyPress(
         subtype: Int16,
@@ -87,15 +117,7 @@ enum KeyTapMatcher {
         flags: CGEventFlags,
         plan: KeyTapPlan
     ) -> BrightnessController.KeyPress? {
-        guard subtype == auxControlButtonsSubtype,
-              ((data1 & keyStateMask) >> keyStateShift) == keyDownState,
-              acceptsModifiers(flags) else { return nil }
-
-        switch Int32((data1 & keyCodeMask) >> keyCodeShift) {
-        case brightnessUpKeyCode where plan.raiseMediaKey: return .raise
-        case brightnessDownKeyCode where plan.lowerMediaKey: return .lower
-        default: return nil
-        }
+        mediaKeyCombo(subtype: subtype, data1: data1, flags: flags).flatMap { plan.mediaKeyPress(for: $0) }
     }
 
     /// Whether a media-key event is the auto-repeat of a held key.
@@ -113,6 +135,26 @@ enum KeyTapMatcher {
     ) -> BrightnessController.KeyPress? {
         let combo = KeyCombo(modifiers: KeyCombo.Modifiers(cgEventFlags: flags), keyCode: keyCode)
         return fallback.first { $0.combo == combo }?.press
+    }
+}
+
+extension KeyTapMatcher {
+    /// Whether a key press belongs to the recorder itself rather than being a
+    /// candidate shortcut: Escape cancels, and Tab or Shift-Tab moves focus.
+    static func isRecorderControlKey(keyCode: Int64, modifiers: KeyCombo.Modifiers) -> Bool {
+        keyCode == 0x35 && modifiers.isEmpty
+            || keyCode == 0x30 && modifiers.isSubset(of: [.shift])
+    }
+
+    /// The combo a key-down stands for while recording, or `nil` for the keys
+    /// that belong to the recorder. A bare F1 or F2 key-down is also `nil`: it
+    /// would read as the brightness media key, which it is not, so it is left
+    /// to the recorder to refuse.
+    static func capturedCombo(keyCode: Int64, flags: CGEventFlags) -> KeyCombo? {
+        let modifiers = KeyCombo.Modifiers(cgEventFlags: flags)
+        guard !isRecorderControlKey(keyCode: keyCode, modifiers: modifiers) else { return nil }
+        if modifiers.isEmpty, keyCode == KeyCombo.f1.keyCode || keyCode == KeyCombo.f2.keyCode { return nil }
+        return KeyCombo(modifiers: modifiers, keyCode: keyCode)
     }
 }
 
