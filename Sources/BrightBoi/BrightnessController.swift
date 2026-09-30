@@ -576,14 +576,18 @@ final class BrightnessController {
         )
     }
 
-    /// Bounded `[100, 200]` per ADR-0004 — the floor keeps an accidental drag
-    /// from blacking out the screen, the ceiling is the hard maximum
-    /// ADR-0002 already established. Lowering it below the current live
-    /// brightness clamps brightness down immediately, via the `setPercentage`
-    /// re-resolve below.
+    /// Bounded to `[100, 200]` and snapped to the 5% grid. 100% is the floor
+    /// because a ceiling below the normal range would only take brightness
+    /// away, and an accidental drag could then black out the screen; 200% is
+    /// the most the panel can sustain. Lowering the ceiling below the current
+    /// live brightness clamps brightness down immediately, via the
+    /// `setPercentage` re-resolve below. A value that snaps to the current
+    /// ceiling is ignored, so a continuous slider drag writes only when the
+    /// ceiling actually moves.
     func setBoostCeiling(_ percentage: Double) {
         guard percentage.isFinite else { return }
         let clamped = Self.clampedBoostCeiling(percentage)
+        guard clamped != boostCeiling else { return }
         boostCeiling = clamped
         persistence.save(boostCeiling: clamped)
         currentState = updatedState(percentage: currentState.percentage)

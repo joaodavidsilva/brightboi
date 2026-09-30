@@ -157,7 +157,10 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
         storedLastRegisteredLoginItemPath
     }
 
+    private(set) var savedBoostCeilings: [Double] = []
+
     func save(boostCeiling: Double) {
+        savedBoostCeilings.append(boostCeiling)
         storedBoostCeiling = boostCeiling
     }
 

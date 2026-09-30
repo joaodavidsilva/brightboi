@@ -1007,7 +1007,7 @@ struct BrightnessControllerTests {
 
     @Test("setBoostCeiling never goes above 200%")
     func setBoostCeilingClampsToCeiling() {
-        let fixture = makeFixture()
+        let fixture = makeFixture(storedBoostCeiling: 150)
         fixture.controller.setBoostCeiling(250)
         #expect(fixture.controller.currentState.boostCeiling == 200)
         #expect(fixture.persistence.storedBoostCeiling == 200)
@@ -1018,6 +1018,42 @@ struct BrightnessControllerTests {
         let fixture = makeFixture()
         fixture.controller.setBoostCeiling(142.5)
         #expect(fixture.controller.currentState.boostCeiling == 140)
+    }
+
+    @Test("setBoostCeiling stores 135 for 137 and 140 for 138")
+    func setBoostCeilingRoundsToNearestStep() {
+        let fixture = makeFixture()
+        fixture.controller.setBoostCeiling(137)
+        #expect(fixture.persistence.storedBoostCeiling == 135)
+        fixture.controller.setBoostCeiling(138)
+        #expect(fixture.persistence.storedBoostCeiling == 140)
+    }
+
+    @Test("setBoostCeiling with the same value twice persists once")
+    func setBoostCeilingSameValuePersistsOnce() {
+        let fixture = makeFixture()
+        fixture.controller.setBoostCeiling(150)
+        fixture.controller.setBoostCeiling(150)
+        fixture.controller.setBoostCeiling(151)
+        #expect(fixture.persistence.savedBoostCeilings == [150])
+    }
+
+    @Test("a one-unit slider drag persists once per 5% step")
+    func setBoostCeilingDragPersistsPerStep() {
+        let fixture = makeFixture()
+        for value in stride(from: 200.0, through: 150.0, by: -1) {
+            fixture.controller.setBoostCeiling(value)
+        }
+        #expect(fixture.persistence.savedBoostCeilings == [195, 190, 185, 180, 175, 170, 165, 160, 155, 150])
+    }
+
+    @Test("an unchanged ceiling leaves brightness alone, a lowered one still clamps it")
+    func setBoostCeilingGuardKeepsReClamp() {
+        let fixture = makeFixture(storedPercentage: 180)
+        fixture.controller.setBoostCeiling(200)
+        #expect(fixture.controller.currentState.percentage == 180)
+        fixture.controller.setBoostCeiling(150)
+        #expect(fixture.controller.currentState.percentage == 150)
     }
 
     @Test("an off-grid ceiling stored from a hand-edited default snaps to the grid on init, so setPercentage can't resolve above it")
