@@ -16,6 +16,9 @@ struct OnboardingView: View {
 
     static let contentSize = CGSize(width: 380, height: 420)
 
+    /// The space either side of the full-width buttons at the bottom.
+    static let buttonInset: CGFloat = 28
+
     /// Where the headers of the permission and confirmation steps start,
     /// measured from the top of the window. The welcome hero is centred.
     private static let headerTop: CGFloat = 52
@@ -34,7 +37,7 @@ struct OnboardingView: View {
                 skipRow
                     .frame(height: Self.skipRowHeight)
             }
-            .padding(.horizontal, 28)
+            .padding(.horizontal, Self.buttonInset)
 
             pageDots()
                 .padding(.top, 14)
