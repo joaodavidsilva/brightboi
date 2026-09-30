@@ -5,7 +5,7 @@ import Testing
 
 /// The popover must not change size while the slider is dragged, including
 /// across 100% where Boost engages. Sizes are the hosted view's own fitting
-/// size, so the test measures what `MenuBarExtra` would size its window to.
+/// size, so the test measures what the popover is sized to.
 /// Banners that report a real change (battery, thermal, display off) are
 /// still allowed to change the height.
 @MainActor

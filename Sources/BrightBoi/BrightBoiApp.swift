@@ -2,24 +2,13 @@ import SwiftUI
 
 @main
 struct BrightBoiApp: App {
-    // Owns every launch side effect and every window that isn't scene-backed
-    // — see `AppDelegate`. SwiftUI constructs it during `App.init`, before
-    // `NSApplication` has finished launching, but `AppDelegate.init` itself
-    // has no side effects, so that's safe.
+    // Owns every launch side effect, the menu bar item and every window that
+    // isn't scene-backed — see `AppDelegate`. SwiftUI constructs it during
+    // `App.init`, before `NSApplication` has finished launching, but
+    // `AppDelegate.init` itself has no side effects, so that's safe.
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            BrightnessMenuContent(
-                controller: appDelegate.controller,
-                updates: appDelegate.updates,
-                settings: appDelegate.settingsPresenter
-            )
-        } label: {
-            BrightnessMenuBarIcon(controller: appDelegate.controller, settings: appDelegate.settingsPresenter)
-        }
-        .menuBarExtraStyle(.window)
-
         Settings {
             SettingsView(
                 controller: appDelegate.controller,

@@ -12,6 +12,13 @@ Packaging/release-notes-snippet.md to its section.
 
 ## [Unreleased]
 
+### Fixed
+
+- VoiceOver, Voice Control and other assistive tools can open the menu bar popover. The menu bar
+  item is now a standard status item that responds to a press, and the popover closes on a click
+  outside it and on Esc. The item is announced as "BrightBoi, brightness N percent", with
+  ", boosted" once past 100%.
+
 ## [1.2.0] - 2026-09-30
 
 ### Added

@@ -64,30 +64,4 @@ struct MenuBarIconTests {
         #expect(BrightnessMenuBarIcon.fillMaskHeight(fraction: 2, canvasHeight: h) == top)
         #expect(BrightnessMenuBarIcon.fillMaskHeight(fraction: -1, canvasHeight: h) == h * BrightnessMenuBarIcon.discBottom)
     }
-
-    @Test("the status item's content carries the label, and not the symbol's own 'Increase Brightness'", accessibilityAvailable)
-    func contentAccessibilityLabel() {
-        for (percentage, boosted) in [(10.0, false), (75.0, false), (150.0, true)] {
-            let rig = ControllerRig(storedPercentage: percentage)
-            let host = OffscreenHost(BrightnessMenuBarIcon(controller: rig.controller, settings: .inert()))
-            let expected = BrightnessMenuBarIcon.accessibilityLabel(percentage: percentage, isBoosted: boosted)
-            // Exactly one element, and it is the label: the drawn glyph adds
-            // no element of its own.
-            #expect(host.tree.nodes.map(\.name) == [expected], "\(host.tree.dump)")
-            #expect(host.tree.spokenTexts.allSatisfy { !$0.localizedCaseInsensitiveContains("increase") })
-            #expect(host.tree.spokenTexts.filter { $0.contains("BrightBoi") } == [expected])
-            OffscreenWindows.closeAll()
-        }
-    }
-
-    @Test("the label follows the level as it changes", accessibilityAvailable)
-    func labelFollowsTheLevel() throws {
-        let rig = ControllerRig(storedPercentage: 40)
-        let host = OffscreenHost(BrightnessMenuBarIcon(controller: rig.controller, settings: .inert()))
-        defer { OffscreenWindows.closeAll() }
-        #expect(host.tree.node(named: "BrightBoi, brightness 40 percent") != nil)
-        rig.controller.setPercentage(120)
-        host.settle()
-        #expect(host.tree.node(named: "BrightBoi, brightness 120 percent, boosted") != nil, "\(host.tree.dump)")
-    }
 }

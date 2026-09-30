@@ -57,6 +57,28 @@ func spinUntil(_ seconds: TimeInterval = 2, _ condition: () -> Bool) {
 }
 
 @MainActor
+@Suite("Settings open action")
+struct SettingsOpenActionTests {
+    @Test("the older command is tried when nothing handles the current one")
+    func fallsBack() {
+        var sent: [String] = []
+        let handled = SettingsPresenter.sendOpenAction { selector in
+            sent.append(NSStringFromSelector(selector))
+            return sent.count == 2
+        }
+        #expect(handled)
+        #expect(sent == ["showSettingsWindow:", "showPreferencesWindow:"])
+    }
+
+    @Test("the older command is not sent when the current one is handled")
+    func stopsAtTheFirst() {
+        var sent: [String] = []
+        #expect(SettingsPresenter.sendOpenAction { sent.append(NSStringFromSelector($0)); return true })
+        #expect(sent == ["showSettingsWindow:"])
+    }
+}
+
+@MainActor
 @Suite("Settings presenter")
 struct SettingsPresenterTests {
     @Test("the app is activated before Settings opens, and the window is fronted after")
@@ -65,39 +87,30 @@ struct SettingsPresenterTests {
         let presenter = log.presenter
         let window = offscreenWindow()
         presenter.register(window: window)
-        presenter.register(sceneOpener: { log.record("open") })
         presenter.show()
-        #expect(log.events == ["activate", "open", "front"])
+        #expect(log.events == ["activate", "responder chain", "front"])
         #expect(log.fronted == [window])
     }
 
-    @Test("a caller's own opener wins over the registered one")
-    func callerOpenerWins() {
+    @Test("the popover is put away before anything else happens")
+    func popoverClosesFirst() {
         let log = PresenterLog()
         let presenter = log.presenter
-        presenter.register(sceneOpener: { log.record("registered") })
-        presenter.show(using: { log.record("popover") })
-        #expect(log.events.prefix(2) == ["activate", "popover"])
-    }
-
-    @Test("with no opener registered the request goes down the responder chain, after activating")
-    func fallsBackToTheResponderChain() {
-        let log = PresenterLog()
-        log.presenter.show()
-        #expect(log.events.prefix(2) == ["activate", "responder chain"])
+        presenter.willShow = { log.record("close popover") }
+        presenter.show()
+        #expect(log.events.prefix(3) == ["close popover", "activate", "responder chain"])
     }
 
     @Test("a window that reports in after the request is fronted once, when it arrives")
     func frontsALateWindow() {
         let log = PresenterLog()
         let presenter = log.presenter
-        presenter.register(sceneOpener: { log.record("open") })
         presenter.show()
-        #expect(log.events == ["activate", "open"])
+        #expect(log.events == ["activate", "responder chain"])
         let window = offscreenWindow()
         presenter.register(window: window)
         presenter.register(window: window)
-        #expect(log.events == ["activate", "open", "front"])
+        #expect(log.events == ["activate", "responder chain", "front"])
         #expect(log.fronted == [window])
     }
 
@@ -117,10 +130,9 @@ struct SettingsPresenterTests {
         let log = PresenterLog()
         let presenter = log.presenter
         presenter.register(window: offscreenWindow())
-        presenter.register(sceneOpener: { log.record("open") })
         presenter.show()
         presenter.show()
-        #expect(log.events == ["activate", "open", "front", "activate", "open", "front"])
+        #expect(log.events == ["activate", "responder chain", "front", "activate", "responder chain", "front"])
     }
 
     @Test("a window's content tells the presenter which window it is in")
@@ -129,19 +141,8 @@ struct SettingsPresenterTests {
         let presenter = log.presenter
         let host = OffscreenHost(Text("Settings").registersAsSettingsWindow(presenter))
         defer { OffscreenWindows.closeAll() }
-        presenter.register(sceneOpener: {})
         presenter.show()
         #expect(log.fronted == [host.window])
-    }
-
-    @Test("the menu bar label registers the open action, so a request that is not from the popover reaches it")
-    func labelRegistersTheOpener() {
-        let rig = ControllerRig()
-        let presenter = SettingsPresenter.inert()
-        #expect(!presenter.hasSceneOpener)
-        _ = OffscreenHost(BrightnessMenuBarIcon(controller: rig.controller, settings: presenter))
-        defer { OffscreenWindows.closeAll() }
-        #expect(presenter.hasSceneOpener)
     }
 }
 
@@ -150,7 +151,6 @@ struct SettingsPresenterTests {
 struct AppRevealTests {
     private func reveal(_ log: PresenterLog, onboardingShowing: Bool = false) -> AppReveal {
         let reveal = AppReveal(settings: log.presenter)
-        reveal.settings.register(sceneOpener: { log.record("open") })
         reveal.bringOnboardingForward = {
             if onboardingShowing { log.record("onboarding") }
             return onboardingShowing
@@ -163,7 +163,7 @@ struct AppRevealTests {
         let log = PresenterLog()
         let handled = reveal(log).handleReopen()
         #expect(handled == false)
-        #expect(log.events == ["activate", "open"])
+        #expect(log.events == ["activate", "responder chain"])
     }
 
     @Test("a reopen while onboarding is up brings onboarding forward instead of opening Settings")
@@ -183,7 +183,7 @@ struct AppRevealTests {
         SingleInstanceGuard.revealRunningCopy(center: center)
         spinUntil { log.events.count >= 2 }
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-        #expect(log.events == ["activate", "open"])
+        #expect(log.events == ["activate", "responder chain"])
     }
 
     @Test("a second launch while onboarding is up brings onboarding forward")
@@ -204,14 +204,13 @@ struct AppRevealTests {
         var clock = Date(timeIntervalSince1970: 1_000)
         let log = PresenterLog()
         let reveal = AppReveal(settings: log.presenter, now: { clock })
-        reveal.settings.register(sceneOpener: { log.record("open") })
         _ = reveal.handleReopen()
         clock.addTimeInterval(0.1)
         reveal.reveal()
-        #expect(log.events == ["activate", "open"])
+        #expect(log.events == ["activate", "responder chain"])
         clock.addTimeInterval(AppReveal.coalesceWindow)
         reveal.reveal()
-        #expect(log.events == ["activate", "open", "activate", "open"])
+        #expect(log.events == ["activate", "responder chain", "activate", "responder chain"])
     }
 
     @Test("the hand-off uses the system-wide notification center")

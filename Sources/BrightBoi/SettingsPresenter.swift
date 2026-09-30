@@ -8,25 +8,26 @@ import SwiftUI
 /// A menu bar app is never the active app when any of these happens, and an
 /// inactive accessory app's new window opens behind whatever is in front, or
 /// is neither key nor on screen over a full-screen app. So every request
-/// activates the app first, opens the window, and then orders the window
-/// forward and makes it key.
+/// closes the popover, activates the app, opens the window, and then orders
+/// the window forward and makes it key.
 ///
-/// SwiftUI only hands out the open action to a view, so the always-mounted
-/// menu bar label registers it here. If it has not registered (its item is
-/// hidden, or the scene is not up yet) the request goes down the responder
-/// chain to the Settings menu command instead, and the window is fronted as
-/// soon as it reports in. The window registers itself the same way, with
-/// `registersAsSettingsWindow`.
+/// The popover is hosted outside any scene, where SwiftUI's open-Settings
+/// action is not reliably available, so the request goes down the responder
+/// chain to the Settings menu command. The window is fronted as soon as it
+/// reports in; it registers itself with `registersAsSettingsWindow`.
 ///
-/// Activation, the responder-chain call and ordering the window forward are
-/// injectable, so a test can drive every path without touching the real app.
+/// Closing the popover, activation, the responder-chain call and ordering the
+/// window forward are injectable, so a test can drive every path without
+/// touching the real app.
 @MainActor
 final class SettingsPresenter {
     private let activate: () -> Void
     private let openThroughResponderChain: () -> Bool
     private let front: (NSWindow) -> Void
 
-    private var sceneOpener: (() -> Void)?
+    /// Runs first on every request, to put away the popover that may have
+    /// asked for it.
+    var willShow: () -> Void = {}
     private weak var window: NSWindow?
     /// While set and in the future, a Settings window that reports in is
     /// fronted: the request that asked for it is still recent. A request that
@@ -41,7 +42,7 @@ final class SettingsPresenter {
     init(
         activate: @escaping () -> Void = { NSApplication.shared.activate(ignoringOtherApps: true) },
         openThroughResponderChain: @escaping () -> Bool = {
-            NSApplication.shared.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            SettingsPresenter.sendOpenAction { NSApplication.shared.sendAction($0, to: nil, from: nil) }
         },
         front: @escaping (NSWindow) -> Void = { window in
             window.orderFrontRegardless()
@@ -55,12 +56,10 @@ final class SettingsPresenter {
         self.front = front
     }
 
-    /// Whether the menu bar label has handed over the scene's open action.
-    var hasSceneOpener: Bool { sceneOpener != nil }
-
-    /// Called by the menu bar label with the scene's open action.
-    func register(sceneOpener: @escaping () -> Void) {
-        self.sceneOpener = sceneOpener
+    /// Asks the responder chain to open Settings, with the current command and
+    /// then the one older systems used. `send` reports whether a target took it.
+    static func sendOpenAction(_ send: (Selector) -> Bool) -> Bool {
+        send(Selector(("showSettingsWindow:"))) || send(Selector(("showPreferencesWindow:")))
     }
 
     /// Called by the Settings window's content when it lands in a window.
@@ -72,15 +71,11 @@ final class SettingsPresenter {
         }
     }
 
-    /// Brings the app forward and opens Settings in front and key. `opener`
-    /// overrides the registered open action, for a caller that has its own.
-    func show(using opener: (() -> Void)? = nil) {
+    /// Brings the app forward and opens Settings in front and key.
+    func show() {
+        willShow()
         activate()
-        if let open = opener ?? sceneOpener {
-            open()
-        } else {
-            _ = openThroughResponderChain()
-        }
+        _ = openThroughResponderChain()
         if let window {
             front(window)
         } else {

@@ -253,8 +253,8 @@ final class BrightnessController {
     /// already persisted — no side effect touches the display, the login
     /// item list, auto-brightness or the key tap. That happens once in
     /// `start()`, so constructing the controller early (SwiftUI's
-    /// `MenuBarExtra`/`Settings` scenes need it at `body` time, before the
-    /// app has finished launching) is always safe. Reading the display's own
+    /// `Settings` scene needs it at `body` time, before the app has finished
+    /// launching) is always safe. Reading the display's own
     /// current brightness here (`DisplayBrightnessProviding.currentNominalPercentage()`)
     /// is likewise a plain read with no side effect — the same category as
     /// `supportsExtendedBrightness()` below, already called from here.

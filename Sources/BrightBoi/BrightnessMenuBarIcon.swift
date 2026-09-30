@@ -1,15 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// The menu bar label: a sun whose disc fills from the bottom in proportion
+/// The menu bar glyph: a sun whose disc fills from the bottom in proportion
 /// to `BrightnessController.State.iconFillFraction`, so it tracks the slider
 /// live, with a small arrow badge once Boosted.
 ///
-/// `MenuBarExtra` keeps only the first plain image of its label and drops
-/// masks, opacity and overlays, so the glyph is drawn once into a single
-/// template `NSImage` and handed over as that. A template image is tinted by
-/// the menu bar itself, so it stays legible on light and dark bars and
-/// against any wallpaper.
+/// The glyph is drawn once into a single template `NSImage` and handed to the
+/// status item's button. A template image is tinted by the menu bar itself,
+/// so it stays legible on light and dark bars and against any wallpaper.
 ///
 /// The rays and ring are always drawn at full strength: the item is the app's
 /// only way in, and a faint outline at low brightness reads as disabled. Only
@@ -18,28 +16,10 @@ import SwiftUI
 /// divides by 100 instead. The badge is the cue for Boost that survives
 /// template rendering, where a colour change would be flattened.
 ///
-/// The image carries the spoken description, because the label set on the
-/// view is what the status item reports to VoiceOver: "BrightBoi, brightness
-/// N percent", plus ", boosted" once past 100%.
-struct BrightnessMenuBarIcon: View {
-    var controller: BrightnessController
-
-    /// Gets the open-Settings action, which SwiftUI only gives to a view. This
-    /// label is the one view that is always mounted, so a request to open
-    /// Settings that does not come from the popover can still reach it.
-    var settings: SettingsPresenter
-
-    @Environment(\.openSettings) private var openSettings
-
-    var body: some View {
-        let state = controller.currentState
-        let label = Self.accessibilityLabel(percentage: state.percentage, isBoosted: state.isBoosted)
-        Image(nsImage: Self.image(fraction: state.iconFillFraction, isBoosted: state.isBoosted, description: label))
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(label)
-            .onAppear { settings.register { openSettings() } }
-    }
-
+/// The image carries the spoken description, and the button the same text as
+/// its accessibility label: "BrightBoi, brightness N percent", plus
+/// ", boosted" once past 100%.
+enum BrightnessMenuBarIcon {
     // MARK: - Pure helpers
 
     /// The canvas every glyph is drawn on, in points. The badge sits inside

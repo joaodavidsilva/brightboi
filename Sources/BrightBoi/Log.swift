@@ -18,6 +18,8 @@ enum Log {
     static let autoBrightness = Logger(subsystem: subsystem, category: "autoBrightness")
     /// Checking GitHub for a newer release.
     static let updates = Logger(subsystem: subsystem, category: "updates")
+    /// The menu bar item and its popover.
+    static let menuBar = Logger(subsystem: subsystem, category: "menuBar")
 }
 
 /// Remembers which failure codes were already reported, so a call that fails

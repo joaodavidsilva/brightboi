@@ -20,7 +20,6 @@ struct BrightnessMenuContent: View {
     /// the test process.
     var quit: @MainActor () -> Void = { NSApplication.shared.terminate(nil) }
 
-    @Environment(\.openSettings) private var openSettings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// A comfortable low-light level, rather than an arbitrary round number.
@@ -79,19 +78,6 @@ struct BrightnessMenuContent: View {
             if visible, let advisory = controller.thermalAdvisory {
                 AccessibilityNotification.Announcement(Self.thermalAdvisorySpokenLabel(advisory)).post()
             }
-        }
-        .onAppear {
-            controller.syncFromDisplay()
-            controller.permissionsMayHaveChanged()
-        }
-        // `MenuBarExtra(.window)` keeps this content's hosting view alive
-        // between openings, so `onAppear` alone isn't guaranteed to fire on
-        // every reopen — pairing it with the app becoming active (which
-        // showing the popover typically triggers) catches the reopen case
-        // `onAppear` might miss.
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            controller.syncFromDisplay()
-            controller.permissionsMayHaveChanged()
         }
     }
 
@@ -405,7 +391,7 @@ struct BrightnessMenuContent: View {
     private func actionsList() -> some View {
         VStack(spacing: 0) {
             Button {
-                settings.show(using: { openSettings() })
+                settings.show()
             } label: {
                 actionRow(title: "Settings…", shortcut: "⌘,", hint: "Command comma")
             }

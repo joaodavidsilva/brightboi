@@ -5,7 +5,7 @@ import SwiftUI
 /// controller and the permissions model with no side effects, so
 /// `BrightBoiApp.body` — read right after `App.init` returns, before
 /// `NSApplication` has finished launching — has something to construct its
-/// scenes from immediately. Everything that actually touches the display,
+/// Settings scene from immediately. Everything that actually touches the display,
 /// the login item list, the key tap, or shows a window waits for
 /// `applicationDidFinishLaunching`, once `NSApp` is the real
 /// `AppKitApplication` SwiftUI expects rather than the plain `NSApplication`
@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Opens Settings in front and key, for every way of asking for it.
     let settingsPresenter = SettingsPresenter()
     private let reveal: AppReveal
+    /// The menu bar item and its popover, created once launch has finished.
+    private var menuBarItem: MenuBarItemController?
     private var onboardingWindow: OnboardingWindowController?
     private var donationWindow: DonationWindowController?
     /// The clock and the time since the Mac started, for the donation prompt.
@@ -88,6 +90,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hud.present(state: state)
         }
         controller.start()
+        let menuBarItem = MenuBarItemController.live(
+            controller: controller,
+            updates: updates,
+            settings: settingsPresenter
+        )
+        self.menuBarItem = menuBarItem
+        menuBarItem.install()
         updates.start()
         permissions.startObservingSystemNotifications()
         // The onboarding window ends up behind System Settings while the user
