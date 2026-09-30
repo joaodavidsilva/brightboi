@@ -12,6 +12,8 @@ Packaging/release-notes-snippet.md to its section.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-30
+
 ### Added
 
 - The shortcut recorder in Settings accepts any key with a modifier, checks the choice against
