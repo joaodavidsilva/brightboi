@@ -909,6 +909,18 @@ struct BrightnessControllerTests {
         #expect(fixture.persistence.storedPercentage == 150)
     }
 
+    @Test("a Boost level is not reported as boosted while the built-in display is off")
+    func notBoostedWhileBuiltInDisplayIsOff() {
+        let fixture = makeFixture(storedPercentage: 150)
+        #expect(fixture.controller.currentState.isBoosted == true)
+
+        reconfigureDisplay(fixture, available: false, supportsBoost: true)
+        #expect(fixture.controller.currentState.isBoosted == false)
+
+        reconfigureDisplay(fixture, available: true, supportsBoost: true)
+        #expect(fixture.controller.currentState.isBoosted == true)
+    }
+
     @Test("choosing a level while Boost is unavailable replaces the remembered Boost level")
     func deliberateChangeForgetsRememberedBoostLevel() {
         let fixture = makeFixture()

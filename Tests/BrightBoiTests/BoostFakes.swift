@@ -153,6 +153,7 @@ final class BoostHarness {
     let appCenter = NotificationCenter()
     var headroom: CGFloat = 3.2
     var session = SessionSnapshot.idle
+    private(set) var sessionReadCount = 0
     var displayActive = true
     private(set) var overlayMountCount = 0
     var overlayAvailable = true
@@ -171,7 +172,10 @@ final class BoostHarness {
             return overlayAvailable ? overlay : nil
         }
         environment.isDisplayActive = { [unowned self] _ in displayActive }
-        environment.sessionSnapshot = { [unowned self] in session }
+        environment.sessionSnapshot = { [unowned self] in
+            sessionReadCount += 1
+            return session
+        }
         environment.headroomStore = store
         environment.workspaceCenter = workspaceCenter
         environment.distributedCenter = distributedCenter

@@ -3,18 +3,15 @@ import SwiftUI
 
 /// The dropdown shown when the menu bar icon is clicked: one continuous
 /// slider spanning Nominal Brightness and Extended Brightness / Boost
-/// (0–200%), per the spec's "one smooth motion, not a separate mode" design.
-/// Dragging below 100% is byte-identical to ticket 04's behavior; the
+/// (0–200%), as one smooth motion rather than a separate mode. The
 /// controller (not this view) owns where the Nominal/Boost boundary falls.
 ///
-/// Visuals follow the design mockups' popover (1a dark / 2a light) — a
-/// custom-drawn track replaces the stock `Slider` because the stock control
+/// A custom-drawn track replaces the stock `Slider` because the stock control
 /// can't render the boost-zone stripe hint, the two-tone fill, or the
-/// boundary tick the mockups call for. Every color here is looked up from
-/// `colorScheme` explicitly (ticket 01) rather than left to automatic
-/// semantic colors, since several mockup colors — the boost amber in
-/// particular — have genuinely different hex values in light vs. dark, not
-/// just an automatic light/dark inversion.
+/// boundary tick. Every color here is looked up from `colorScheme`
+/// explicitly rather than left to automatic semantic colors, since several
+/// colors — the boost amber in particular — have genuinely different hex
+/// values in light vs. dark, not just an automatic light/dark inversion.
 struct BrightnessMenuContent: View {
     var controller: BrightnessController
 
@@ -229,8 +226,8 @@ struct BrightnessMenuContent: View {
                 // Boost scales the whole display, HDR included; nothing can
                 // be done about it, so it is a footnote, not a warning.
                 Text("While boosted, HDR video and photos lose their brightest highlights.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(palette.tertiaryText)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(palette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -282,7 +279,7 @@ struct BrightnessMenuContent: View {
     }
 }
 
-/// The custom track replacing the stock `Slider`, matching mockups 1a/2a:
+/// The custom track replacing the stock `Slider`:
 /// a base track, a diagonal-stripe hint over the unfilled boost zone (only
 /// when `supportsBoost`), a solid nominal fill, a gradient boost fill, a
 /// tick at the Nominal/Boost boundary, and a plain circular knob.
@@ -309,7 +306,7 @@ private struct BoostSlider: View {
             // is reachable; otherwise Nominal fills the entire track. Drawn
             // at the literal midpoint because the track always spans the
             // full 0...200 domain regardless of a personal Boost Ceiling
-            // (ticket 02) — only how far the *fill* is allowed to travel
+            // — only how far the *fill* is allowed to travel
             // changes there, not where 100% sits on the track itself.
             let boundaryX = supportsBoost ? width / 2 : width
             let trackY = (Self.rowHeight - Self.trackHeight) / 2

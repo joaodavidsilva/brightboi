@@ -16,8 +16,6 @@ enum Log {
     static let keyTap = Logger(subsystem: subsystem, category: "keyTap")
     /// macOS auto-brightness.
     static let autoBrightness = Logger(subsystem: subsystem, category: "autoBrightness")
-    /// Launch at login.
-    static let loginItem = Logger(subsystem: subsystem, category: "loginItem")
 }
 
 /// Remembers which failure codes were already reported, so a call that fails

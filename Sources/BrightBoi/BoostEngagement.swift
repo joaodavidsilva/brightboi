@@ -132,6 +132,10 @@ final class BoostEngagement {
     /// the front, before Boost is suspended for it.
     static let occlusionGrace: TimeInterval = 0.5
 
+    /// How often a suspended engagement reads the session back to repair a
+    /// reason that should have ended.
+    static let sessionRepairInterval: TimeInterval = 2
+
     /// Everything outside the class that it reads or waits on, so tests can
     /// stand in for each. The defaults are the real system.
     @MainActor
@@ -183,6 +187,10 @@ final class BoostEngagement {
     private var headroomTimer: Timer?
     private var pendingReassertions: [() -> Void] = []
     private var cancelOcclusionCheck: (() -> Void)?
+    private var lastSessionRepair: TimeInterval?
+    /// Set when a resume could not mount the overlay yet (the screen was not
+    /// back); the headroom poll retries until it succeeds.
+    private var resumePending = false
     private var observers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
 
     var isEngaged: Bool { baselineGammaTable != nil }
@@ -251,7 +259,10 @@ final class BoostEngagement {
     @discardableResult
     func engage(boostFraction: Double) -> BrightnessApplyOutcome {
         guard let displayID else { return .displayUnavailable }
-        reconcileSession()
+        // The session is read back only when this could change what Boost
+        // does; while Boost runs undisturbed the notifications are enough,
+        // and a slider drag must not scan the process list on every tick.
+        if !isEngaged || suspension.isSuspended { reconcileSession() }
         guard let live = environment.tables.capture(displayID: displayID) else { return .captureFailed }
 
         switch GammaTable.baselineDecision(live: live, lastWritten: lastWrittenGammaTable) {
@@ -300,6 +311,10 @@ final class BoostEngagement {
         stopHeadroomTracking()
         cancelScheduledWork()
         starvation.reset()
+        // A covered overlay is only meaningful while Boost runs; left set,
+        // it would hold every later engagement back.
+        suspension.set(.overlayOccluded, active: false)
+        resumePending = false
         requestedBoostFraction = 0
         effectiveFactor = 1.0
         defer {
@@ -390,7 +405,8 @@ final class BoostEngagement {
         let changed = suspension.set(reason, active: active)
         guard changed, isEngaged else { return }
         if suspension.isSuspended {
-            stopHeadroomTracking()
+            // The timer keeps running: while suspended it repairs reasons
+            // that a missed notification left set.
             starvation.reset()
             cancelOcclusionCheck?()
             cancelOcclusionCheck = nil
@@ -409,7 +425,14 @@ final class BoostEngagement {
     /// asks for EDR again, and the table is validated before it is scaled,
     /// since it may have been replaced in the meantime.
     private func resumeFromSuspension() {
-        guard let displayID, environment.isDisplayActive(displayID), mountOrRehomeOverlay(on: displayID) else { return }
+        guard let displayID, environment.isDisplayActive(displayID) else { return }
+        guard mountOrRehomeOverlay(on: displayID) else {
+            // The screen may not be back yet; the poll retries.
+            resumePending = true
+            startHeadroomTracking()
+            return
+        }
+        resumePending = false
         overlay?.engageEDR()
         starvation.reset()
         revalidateTable(forceWrite: true)
@@ -524,14 +547,14 @@ final class BoostEngagement {
     /// while another reason holds, which would fight the screen saver and keep
     /// the panel in EDR behind it.
     func overlayVisibilityChanged() {
-        guard isEngaged, let overlay else { return }
+        guard let overlay else { return }
         if overlay.isVisible {
             cancelOcclusionCheck?()
             cancelOcclusionCheck = nil
             setSuspended(.overlayOccluded, active: false)
             return
         }
-        guard !suspension.isSuspended else { return }
+        guard isEngaged, !suspension.isSuspended else { return }
         overlay.bringToFront()
         cancelOcclusionCheck?()
         cancelOcclusionCheck = environment.schedule(Self.occlusionGrace) { [weak self] in
@@ -590,9 +613,16 @@ final class BoostEngagement {
             stopHeadroomTracking()
             return
         }
-        guard !suspension.isSuspended else { return }
-        let headroom = readHeadroom(displayID)?.current ?? 1.0
         let now = environment.now()
+        guard !suspension.isSuspended else {
+            repairSuspension(now: now)
+            return
+        }
+        if resumePending {
+            resumeFromSuspension()
+            return
+        }
+        let headroom = readHeadroom(displayID)?.current ?? 1.0
 
         if observedHeadroom.record(headroom: headroom, now: now), let maximum = observedHeadroom.maximum {
             environment.headroomStore.save(maximum, forDisplay: displayID)
@@ -603,6 +633,19 @@ final class BoostEngagement {
             overlay?.engageEDR()
         }
         writeCurrentFactor(force: false, headroom: headroom)
+    }
+
+    /// While suspended, reads the session back every `sessionRepairInterval`
+    /// so a reason that outlived its own "stopped" notification (a screen
+    /// saver process still listed right after it ended) or a missed
+    /// notification cannot leave Boost off for good.
+    private func repairSuspension(now: TimeInterval) {
+        if let lastSessionRepair, now - lastSessionRepair < Self.sessionRepairInterval { return }
+        lastSessionRepair = now
+        if suspension.contains(.overlayOccluded), overlay?.isVisible != false {
+            setSuspended(.overlayOccluded, active: false)
+        }
+        reconcileSession()
     }
 
     private func stopHeadroomTracking() {

@@ -192,7 +192,7 @@ looks over- or under-driven.
   point (`BoostCurve.linear`; a geometric, equal-ratio alternative exists and
   is switched by changing `BoostCurve.active`); it is **not** independently nits-verified (see caveat above), so
   treat it as a reasoned default, not a measured curve. If a manual check
-  during ticket 04/05 shows it feels non-linear (perceptually or in battery
+  in use shows it feels non-linear (perceptually or in battery
   draw), an eased curve can replace the linear one without changing the
   anchors.
 - The EDR overlay window needs to be mounted whenever `percentage > 100` and
@@ -273,7 +273,7 @@ exists once EDR is engaged.
    built-in display with a 0-255 step wedge and engages EDR; raise the factor
    with the arrow keys until the brightest steps merge, keeping each trial to a
    few seconds (the tool drops back to 1.0 after 6 s and restores the table on
-   every exit). Merging near the headroom (about 3.2) means linear light;
+   every exit; the tool has been typechecked but not yet run on a panel, so watch the first launch and press Esc to leave). Merging near the headroom (about 3.2) means linear light;
    merging near 1.70 (the headroom to the power 1/2.2) means gamma-encoded. To
    apply the result, set `GammaDomain.assumed` to `.encoded(gamma: 2.2)`; the
    factor mapping and the headroom clamp both follow.

@@ -81,9 +81,9 @@ final class BrightnessController {
         var nominalControlStatus: NominalControlStatus = .available
 
         /// `true` while a level above 100% is chosen but Boost is held at
-        /// Nominal 100% because Invert Colors is on: the transfer table is
-        /// applied before the inversion on Apple silicon, so scaling it would
-        /// darken the image. The chosen level is kept and Boost comes back
+        /// Nominal 100% because Invert Colors is on: the transfer table may
+        /// be applied before the inversion, which would darken the image
+        /// instead of brightening it. The chosen level is kept and Boost comes back
         /// when Invert is turned off.
         var isBoostPaused: Bool = false
         var launchAtLoginEnabled: Bool
@@ -983,7 +983,7 @@ final class BrightnessController {
         let boostPaused = isBoostPaused(percentage: percentage, invertsColors: invertsColors)
         return State(
             percentage: percentage,
-            isBoosted: percentage > nominalCeilingPercentage && !boostPaused,
+            isBoosted: percentage > nominalCeilingPercentage && !boostPaused && builtInDisplayAvailable,
             iconFillFraction: percentage / effectiveMaximum(supportsBoost: supportsBoost),
             supportsBoost: supportsBoost,
             builtInDisplayAvailable: builtInDisplayAvailable,

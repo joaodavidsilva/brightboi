@@ -428,6 +428,86 @@ struct BoostEngagementTests {
         #expect(approximately(harness.tables.liveFactor, 2.0))
     }
 
+    @Test("an occlusion left set by a released Boost does not hold the next engagement back")
+    func staleOcclusionDoesNotSurviveDisengage() {
+        let harness = BoostHarness()
+        harness.engagement.engage(boostFraction: 1.0)
+        harness.overlay.setVisible(false)
+        harness.clock.advance(by: BoostEngagement.occlusionGrace + 0.1)
+        #expect(harness.engagement.suspension.contains(.overlayOccluded))
+
+        harness.engagement.disengage()
+        harness.overlay.setVisible(true)
+        harness.engagement.engage(boostFraction: 1.0)
+
+        #expect(harness.engagement.suspension.isSuspended == false)
+        #expect(approximately(harness.tables.liveFactor, 2.0))
+        #expect(harness.overlay.edrRequested == true)
+    }
+
+    @Test("a missed 'visible again' notification is repaired while suspended")
+    func missedVisibleNotificationIsRepaired() {
+        let harness = BoostHarness()
+        harness.engagement.engage(boostFraction: 1.0)
+        harness.overlay.setVisible(false)
+        harness.clock.advance(by: BoostEngagement.occlusionGrace + 0.1)
+        #expect(harness.engagement.suspension.contains(.overlayOccluded))
+
+        harness.overlay.isVisible = true
+        harness.clock.advance(by: BoostEngagement.sessionRepairInterval + 0.1)
+        harness.engagement.pollHeadroom()
+
+        #expect(harness.engagement.suspension.isSuspended == false)
+        #expect(approximately(harness.tables.liveFactor, 2.0))
+    }
+
+    @Test("a screen saver process that lingers after its stop notification does not leave Boost off")
+    func lingeringScreenSaverIsRepaired() {
+        let harness = BoostHarness()
+        harness.engagement.engage(boostFraction: 1.0)
+        harness.engagement.handle(.screenSaverStarted)
+
+        harness.session.isScreenSaverRunning = true
+        harness.engagement.handle(.screenSaverStopped)
+        harness.clock.advance(by: 5)
+        #expect(harness.engagement.suspension.contains(.screenSaver))
+
+        harness.session.isScreenSaverRunning = false
+        harness.clock.advance(by: BoostEngagement.sessionRepairInterval + 0.1)
+        harness.engagement.pollHeadroom()
+
+        #expect(harness.engagement.suspension.isSuspended == false)
+        #expect(approximately(harness.tables.liveFactor, 2.0))
+    }
+
+    @Test("a resume that finds no screen yet is retried by the poll")
+    func resumeWithoutScreenIsRetried() {
+        let harness = BoostHarness()
+        harness.engagement.engage(boostFraction: 1.0)
+        harness.engagement.handle(.screenLocked)
+        harness.overlay.rehomeSucceeds = false
+
+        harness.engagement.handle(.screenUnlocked)
+        #expect(approximately(harness.tables.liveFactor, 1.0))
+
+        harness.overlay.rehomeSucceeds = true
+        harness.engagement.pollHeadroom()
+        #expect(approximately(harness.tables.liveFactor, 2.0))
+        #expect(harness.overlay.edrRequested == true)
+    }
+
+    @Test("changing the level while Boost runs does not read the session back")
+    func levelChangesDoNotScanTheSession() {
+        let harness = BoostHarness()
+        harness.engagement.engage(boostFraction: 0.5)
+        let reads = harness.sessionReadCount
+
+        for fraction in stride(from: 0.5, through: 1.0, by: 0.1) {
+            harness.engagement.engage(boostFraction: fraction)
+        }
+        #expect(harness.sessionReadCount == reads)
+    }
+
     @Test("the overlay is not brought to the front while another reason holds")
     func noFightWithTheScreenSaver() {
         let harness = BoostHarness()

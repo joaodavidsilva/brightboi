@@ -321,8 +321,7 @@ struct SettingsView: View {
 }
 
 /// A small clickable pill that records the next key combination pressed
-/// while active — used for both the Raise and Lower rows. Rejects (per
-/// ADR-0007) any combo without a modifier key unless it's F1/F2 itself,
+/// while active — used for both the Raise and Lower rows. Rejects any combo without a modifier key unless it's F1/F2 itself,
 /// briefly showing a rejection hint instead of applying it.
 private struct ShortcutRecorderView: View {
     var combo: KeyCombo

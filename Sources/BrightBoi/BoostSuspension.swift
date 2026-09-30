@@ -35,8 +35,6 @@ struct BoostSuspension: Equatable {
         /// The gamma factor to write: 1.0 (the unscaled baseline) while
         /// suspended, otherwise the requested factor clamped to the headroom.
         var factor: CGFloat
-        /// Whether the overlay should be asking for EDR.
-        var wantsEDR: Bool
     }
 
     /// Adds or removes `reason`. `true` when that changed whether Boost is
@@ -59,18 +57,8 @@ struct BoostSuspension: Equatable {
     /// so Boost comes back as the headroom returns instead of jumping ahead
     /// of it and clipping.
     func plan(requestedFactor: CGFloat, headroom: CGFloat) -> Plan {
-        guard !isSuspended else { return Plan(factor: 1, wantsEDR: false) }
-        return Plan(factor: BoostHeadroom.effectiveFactor(requested: requestedFactor, headroom: headroom), wantsEDR: true)
-    }
-
-    /// Brings the three reasons that mirror the session into line with
-    /// `snapshot`. The system announces lock, unlock, screen saver and session
-    /// changes by notification, and a missed one would leave Boost suspended
-    /// for good; reading the state back repairs that.
-    mutating func reconcile(with snapshot: SessionSnapshot) {
-        set(.screenLocked, active: snapshot.isScreenLocked)
-        set(.sessionInactive, active: !snapshot.isOnConsole)
-        set(.screenSaver, active: snapshot.isScreenSaverRunning)
+        guard !isSuspended else { return Plan(factor: 1) }
+        return Plan(factor: BoostHeadroom.effectiveFactor(requested: requestedFactor, headroom: headroom))
     }
 }
 

@@ -9,8 +9,8 @@ struct BoostSuspensionTests {
     @Test("with no reason, the plan is the requested factor clamped to the headroom, with EDR on")
     func activePlan() {
         let suspension = BoostSuspension()
-        #expect(suspension.plan(requestedFactor: 2.0, headroom: 3.2) == .init(factor: 2.0, wantsEDR: true))
-        #expect(suspension.plan(requestedFactor: 2.0, headroom: 1.2) == .init(factor: 1.2, wantsEDR: true))
+        #expect(suspension.plan(requestedFactor: 2.0, headroom: 3.2) == .init(factor: 2.0))
+        #expect(suspension.plan(requestedFactor: 2.0, headroom: 1.2) == .init(factor: 1.2))
     }
 
     @Test("each reason suspends: the unscaled table and no EDR", arguments: BoostSuspendReason.allCases)
@@ -18,7 +18,7 @@ struct BoostSuspensionTests {
         var suspension = BoostSuspension()
         suspension.set(reason, active: true)
         #expect(suspension.isSuspended)
-        #expect(suspension.plan(requestedFactor: 2.0, headroom: 3.2) == .init(factor: 1, wantsEDR: false))
+        #expect(suspension.plan(requestedFactor: 2.0, headroom: 3.2) == .init(factor: 1))
     }
 
     @Test("a reason resumes Boost only when it is the last one")
@@ -41,19 +41,6 @@ struct BoostSuspensionTests {
         #expect(suspension.set(.sessionInactive, active: true) == false)
         #expect(suspension.set(.overlayOccluded, active: false) == false)
         #expect(suspension.reasons == [.sessionInactive])
-    }
-
-    @Test("reconciling with the session sets and clears the three session reasons and leaves the others")
-    func reconcile() {
-        var suspension = BoostSuspension()
-        suspension.set(.overlayOccluded, active: true)
-        suspension.set(.screenSaver, active: true)
-
-        suspension.reconcile(with: SessionSnapshot(isScreenLocked: true, isOnConsole: false, isScreenSaverRunning: false))
-        #expect(suspension.reasons == [.overlayOccluded, .screenLocked, .sessionInactive])
-
-        suspension.reconcile(with: .idle)
-        #expect(suspension.reasons == [.overlayOccluded])
     }
 }
 

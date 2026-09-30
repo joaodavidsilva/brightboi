@@ -43,7 +43,7 @@ struct KeyCombo: Equatable, Codable {
     static let f1 = KeyCombo(modifiers: [], keyCode: f1VirtualKeyCode)
     static let f2 = KeyCombo(modifiers: [], keyCode: f2VirtualKeyCode)
 
-    /// Per ADR-0007: every remap combination must include at least one
+    /// Every remap combination must include at least one
     /// modifier (⌘/⌥/⌃/⇧), except F1/F2 themselves — dedicated media keys
     /// with no ordinary-typing collision risk, which is why the original
     /// hardcoded tap never needed this guard.
