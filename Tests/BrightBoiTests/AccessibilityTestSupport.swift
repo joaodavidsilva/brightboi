@@ -29,8 +29,8 @@ final class OffscreenWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     /// The app is never active under test (activating it would take keyboard
     /// focus from whoever is using the machine), so AppKit reports no key
-    /// window. macOS 15's SwiftUI sends keys to a focused view only in the
-    /// key window, so this window says it is key, as the open popover is.
+    /// window, while in use the popover and Settings are the key window when
+    /// they take keys. This window says it is key so the views see that state.
     override var isKeyWindow: Bool { true }
 
     /// The mouse up a click in flight hands to a control that tracks the
@@ -40,7 +40,6 @@ final class OffscreenWindow: NSWindow {
     private func takeMouseUp(_ mask: NSEvent.EventTypeMask) -> NSEvent? {
         guard mask.contains(.leftMouseUp), let up = mouseUpForTracking else { return nil }
         mouseUpForTracking = nil
-        print("DIAG tracking loop took the mouse up")
         return up
     }
 

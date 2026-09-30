@@ -35,8 +35,7 @@ jobs:
         run: swift build -c release -Xswiftc -warnings-as-errors
 
       - name: Test
-        timeout-minutes: 8
-        run: script -q /dev/null swift test --no-parallel
+        run: swift test
 
       - name: Lint Info.plist
         run: plutil -lint Packaging/Info.plist

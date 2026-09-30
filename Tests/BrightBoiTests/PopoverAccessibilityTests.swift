@@ -184,14 +184,17 @@ struct PopoverAccessibilityTests {
         let host = popover(rig)
         let slider = try #require(keyViewProxies(in: host).first)
         #expect(host.window.makeFirstResponder(slider))
+        // SwiftUI takes the new first responder into its focus on a later
+        // pass of the run loop (macOS 15 is slower at it), so let it, or the
+        // first key press arrives before anything is focused.
+        host.settle()
+        host.settle()
 
         func press(_ code: UInt16, _ scalar: Int) {
             host.press(key: code, characters: String(UnicodeScalar(scalar)!))
             host.settle()
         }
-        print("DIAG arrows fr=\(String(describing: host.window.firstResponder)) key=\(host.window.isKeyWindow) active=\(NSApp.isActive)")
         press(126, NSUpArrowFunctionKey)
-        print("DIAG arrows after up: \(rig.controller.currentState.percentage)")
         #expect(rig.controller.currentState.percentage == 155)
         press(124, NSRightArrowFunctionKey)
         #expect(rig.controller.currentState.percentage == 160)
