@@ -42,8 +42,8 @@ final class OnboardingModel {
         self.permissions = permissions
     }
 
-    /// `false` once `hasCompletedOnboarding` has been persisted by any path
-    /// (any path) — `nil` (fresh install) counts as "should show".
+    /// `false` once `hasCompletedOnboarding` has been persisted; `nil` (fresh
+    /// install) counts as "should show".
     static func shouldShow(persistence: BrightnessPersisting) -> Bool {
         persistence.loadHasCompletedOnboarding() != true
     }

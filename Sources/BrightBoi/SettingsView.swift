@@ -4,7 +4,8 @@ import SwiftUI
 
 /// BrightBoi's Settings window: a native grouped `Form` with General (launch
 /// at login, auto-brightness takeover, Key Remap and its shortcuts), Boost
-/// Ceiling and Permissions sections, then a footer with the version, Support BrightBoi and Quit.
+/// Ceiling and Permissions sections, then a footer with the version,
+/// Support BrightBoi and Quit.
 /// Rows use the system's own styles, so the window follows the platform's
 /// look in both appearances.
 struct SettingsView: View {
@@ -313,7 +314,8 @@ struct SettingsView: View {
                 if !granted {
                     Button("Turn on…", action: onGrant)
                         .controlSize(.small)
-                        .accessibilityLabel("Turn on \(title)")
+                        .accessibilityLabel("Open System Settings for \(title)")
+                        .accessibilityHint("Turn on")
                         .accessibilityInputLabels(Self.turnOnInputLabels(for: title))
                 }
             }

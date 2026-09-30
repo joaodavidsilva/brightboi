@@ -55,7 +55,7 @@ final class DonationWindowController: NSObject, NSWindowDelegate {
         self.onClose = onClose
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: DonationView.contentWidth, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: DonationView.contentWidth, height: 1),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false

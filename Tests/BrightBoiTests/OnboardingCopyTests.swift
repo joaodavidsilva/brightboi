@@ -22,12 +22,12 @@ struct OnboardingCopyTests {
     @Test("without the key tap the confirmation points to Settings instead of promising keys")
     func confirmationWithoutKeys() {
         let boost = OnboardingCopy.confirmation(supportsBoost: true, keyRemapActive: false)
-        #expect(boost.body.contains("Turn on Accessibility in Settings"))
+        #expect(boost.body.contains("Accessibility is on in Settings"))
         #expect(!boost.body.contains("just hit"))
         #expect(boost.showsIllustration)
 
         let plain = OnboardingCopy.confirmation(supportsBoost: false, keyRemapActive: false)
-        #expect(plain.body.contains("Turn on Accessibility in Settings"))
+        #expect(plain.body.contains("Accessibility is on in Settings"))
         #expect(!plain.body.contains("100%"))
     }
 

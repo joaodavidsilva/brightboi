@@ -82,7 +82,9 @@ struct DonationView: View {
                 .foregroundStyle(Color.textTertiary)
         }
         .padding(.horizontal, 24)
-        .padding(.top, 36)
+        // The window has a full-size title bar that already insets the content
+        // by its own height; this is only the breathing room beneath it.
+        .padding(.top, 14)
         .padding(.bottom, 20)
         .frame(width: Self.contentWidth)
         .background(Color.surfaceWindow)

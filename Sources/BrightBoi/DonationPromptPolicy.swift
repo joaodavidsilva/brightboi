@@ -2,8 +2,9 @@ import Foundation
 
 /// Decides when the donation window may appear on its own: a week after the
 /// first launch, then at most once a month, never over onboarding and never
-/// when the app was only started by logging in. Pure, so the rules can be
-/// tested without a clock, a window or any stored state.
+/// when the app was only started by logging in. The rules
+/// (`shouldShow`, `isLikelyLoginLaunch`) are pure; `prepareLaunchPrompt` is
+/// the one place that reads and writes the two stored dates.
 enum DonationPromptPolicy {
     /// How long after the first launch the first prompt may appear.
     static let firstPromptDelay: TimeInterval = 7 * 86_400

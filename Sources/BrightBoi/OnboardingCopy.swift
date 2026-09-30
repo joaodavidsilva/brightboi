@@ -55,7 +55,7 @@ enum OnboardingCopy {
             )
         case (true, false):
             Confirmation(
-                body: "I live in the menu bar — click the sun. Want F1/F2 to go past 100%? Turn on Accessibility in Settings any time.",
+                body: "I live in the menu bar — click the sun. Want F1/F2 to go past 100%? Make sure Accessibility is on in Settings.",
                 showsIllustration: true
             )
         case (false, true):
@@ -65,7 +65,7 @@ enum OnboardingCopy {
             )
         case (false, false):
             Confirmation(
-                body: "I live in the menu bar — click the sun. Want F1/F2 to move in \(step)% steps? Turn on Accessibility in Settings any time.",
+                body: "I live in the menu bar — click the sun. Want F1/F2 to move in \(step)% steps? Make sure Accessibility is on in Settings.",
                 showsIllustration: false
             )
         }
