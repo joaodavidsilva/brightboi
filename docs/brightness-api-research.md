@@ -1,28 +1,27 @@
-# Brightness API research (ticket 02)
+# Brightness API research
 
-Empirical findings for how `BrightnessController`'s real (non-fake)
-`DisplayBrightnessProviding` implementation should talk to the display, per
-[spec](../.scratch/brightboi/spec.md) and [CONTEXT.md](../CONTEXT.md)'s
-Nominal Brightness / Extended Brightness / Boost Ceiling vocabulary.
+Empirical findings for how BrightBoi's real (non-fake) display-brightness
+implementation talks to the display. "Nominal Brightness" means the 0-100%
+range Control Center offers, "Extended Brightness" or "Boost" the 100-200%
+range above it, and "Boost Ceiling" the highest level the user allows.
 
 All testing below was done on the actual target machine (MacBook Pro M1 Max,
-Liquid Retina XDR, macOS 27.0 build 26A5388g) using a throwaway harness, not
-shipped code — see `.scratch/brightboi/research/`. That directory is
-reproducible scratch work, not part of the app; nothing in `Sources/` depends
-on it. Raw captured output from every run referenced below is in
-`.scratch/brightboi/research/run-log.txt`.
+Liquid Retina XDR, macOS 27.0 build 26A5388g) using a throwaway test program
+that is not included in this repository and that nothing in `Sources/`
+depends on.
 
 ## Summary
 
 - **Nominal Brightness (0–100%)** is unlocked by `DisplayServices.framework`
   — a private but widely-used, well-behaved framework. Confirmed working.
 - **Extended Brightness / Boost (100–200%)** is **not** achieved by handing an
-  out-of-range value to a private "set brightness" symbol, contrary to what
-  the ticket assumed. The mechanism that actually moves the panel past the
+  out-of-range value to a private "set brightness" symbol, as one might
+  first assume. The mechanism that actually moves the panel past the
   Nominal ceiling is a **public-API technique**: force EDR (Extended Dynamic
   Range) engagement with a tiny always-on-top Metal overlay, then scale the
   display's gamma/transfer table past 1.0 with `CGSetDisplayTransferByTable`.
-  Confirmed working. **This contradicts a premise in [ADR-0001](adr/0001-private-apis-force-direct-distribution.md)** — see [Flag for the user](#flag-for-the-user-adr-0001-premise) below.
+  Confirmed working. Boost therefore needs no private symbol; see
+  [Note on distribution](#note-on-distribution).
 - A private low-level candidate (`CoreDisplay_Display_SetUserBrightness` with
   values > 1.0) was tested and found **unreliable** on this hardware/OS — a
   legitimate negative result, consistent with community reports that it
@@ -45,8 +44,8 @@ typealias SetFn = @convention(c) (CGDirectDisplayID, Float) -> Int32
   non-linear-but-monotonic value, consistent with macOS's native brightness
   curve.
 - **Mapping:** none needed. `percentage ∈ [0, 100] → DisplayServicesSetBrightness(displayID, Float(percentage / 100.0))`.
-  This is exactly what Control Center has always done, satisfying spec item
-  20 (dragging below 100% behaves exactly like the old slider) for free.
+  This is exactly what Control Center has always done, so dragging below 100%
+  behaves exactly like the old slider, for free.
 
 ## Ground-truth signal used for verification: `IOMFBBrightnessLevel`
 
@@ -62,15 +61,14 @@ ioreg -lw0 -r -c AppleCLCD2
   panel's peak spec, encoded **Q16.16 fixed-point nits**.
 - `IOMFBBrightnessLevel = 32767996` ≈ `500 × 65536` (`499.99` nits) when
   `DisplayServicesGetBrightness` read `1.0`. This is a precise, independent
-  confirmation that Nominal 100% really is 500 nits, matching CONTEXT.md.
+  confirmation that Nominal 100% really is 500 nits.
 
 This register is a solid proxy for the Nominal range (0–100%), where it
 tracks 1:1 with the panel's actual driven brightness. **It stopped being a
-useful proxy once EDR was engaged** — see caveat below. Ticket 04/05 can
-reuse this read-only technique (shell out to `ioreg`, or use
-`IORegistryEntryCreateCFProperties` directly) for manual/diagnostic
-verification, but should not build production logic on top of an
-undocumented registry key.
+useful proxy once EDR was engaged** — see caveat below. The same read-only
+technique (shell out to `ioreg`, or use `IORegistryEntryCreateCFProperties`
+directly) is fine for manual or diagnostic verification, but production
+logic should not be built on an undocumented registry key.
 
 ## Extended Brightness / Boost (100–200%): EDR trigger + gamma table
 
@@ -137,9 +135,15 @@ built-in displays:
    window). All 9 factors tested (`1.0` through `3.0`) returned
    `kCGErrorSuccess` (`0`).
 
-3. **Clean up.** Reapply the originally-captured table and call
-   `CGDisplayRestoreColorSyncSettings()`, then close the overlay window.
-   Confirmed this restores exactly to baseline (`IOMFBBrightnessLevel` back
+3. **Clean up.** Reapply the originally-captured table for the built-in
+   display, and only if the live table is still the one BrightBoi wrote (if
+   another process has replaced it, writing the old baseline back would undo
+   that process's change). `CGDisplayRestoreColorSyncSettings()` is not used:
+   it resets every connected display, and Boost must never touch an external
+   monitor. The overlay window stays mounted: disengaging clears its
+   `wantsExtendedDynamicRangeContent` flag and pauses its rendering, because
+   closing it and releasing its layer crashed with `EXC_BAD_ACCESS`. The
+   reference run confirmed this restores exactly to baseline (`IOMFBBrightnessLevel` back
    to `32767996`, `DisplayServicesGetBrightness` unaffected throughout at
    `1.0`) — the two mechanisms are orthogonal, so Nominal (<100%) and Boost
    (>100%) can coexist without fighting each other.
@@ -157,9 +161,8 @@ power/heat than baseline — the gamma factor is what actually pushes
 real content into that headroom, and there is no cheap IORegistry counter
 that reflects it. **No photometer was available in this environment to
 measure the resulting nits directly against the gamma factor.**
-Ticket 04/05 should do a manual/visual sanity check when implementing the
-real `DisplayBrightnessProviding`, and adjust the factor curve below if it
-looks over- or under-driven.
+The factor curve below therefore needs a manual, visual sanity check, and
+should be adjusted if it looks over- or under-driven.
 
 ## Percentage → API-value mapping
 
@@ -258,9 +261,9 @@ Nominal 100%. Color Filters have no public signal.
 collapse to about the boosted SDR white while it is on (reports from other apps
 using the technique). This is disclosed in the popover and README. Whether a
 table BrightBoi has written once keeps HDR clipped after returning to 100% is
-unchecked; if it does, `disengage()` should call
-`CGDisplayRestoreColorSyncSettings()` when the built-in is the only active
-display.
+unchecked. If it does, one idea (untried) is to let ColorSync reset the
+built-in display's settings when it is the only active display; the current
+code never does that, because the reset covers every connected display.
 
 ## Calibrating the Boost factor
 
@@ -283,12 +286,11 @@ exists once EDR is engaged.
 Record the result here with the macOS build. Not yet measured.
 
 
-## Auto-Brightness Takeover (ticket 06): `CoreBrightness.framework`'s `CBALC*`
+## Auto-Brightness Takeover: `CoreBrightness.framework`'s `CBALC*`
 
-Ticket 02 (above) didn't research this — it's ticket 06's concern. Findings
-below are from ticket 06's own small spike
-(`.scratch/brightboi/research/auto-brightness-spike.swift`, raw output in
-`run-log.txt`), same target machine.
+The sections above did not cover this. The findings below come from a
+separate small spike (another throwaway test program, not included in this
+repository) on the same target machine.
 
 - **Dead end:** `DisplayServices.framework` exports
   `DisplayServicesAmbientLightCompensationEnabled` /
@@ -334,49 +336,32 @@ below are from ticket 06's own small spike
   `disableAutoBrightness()` call, once, at controller init, no read-back —
   not the crashing one, so the real implementation only calls the setter.
 
-## Flag for the user: ADR-0001 premise
+## Note on distribution
 
-[ADR-0001](adr/0001-private-apis-force-direct-distribution.md) states:
-
-> There is no public macOS API to push the built-in display's brightness
-> past the Nominal Brightness ceiling... BrightBoi will use private/
-> undocumented Apple frameworks... Because App Store review disallows
-> private API usage, this decision forces BrightBoi to ship as a
-> Developer-ID-signed, notarized app distributed directly.
-
-This spike's confirmed-working mechanism (EDR trigger + gamma table) uses
-only **public, documented** APIs (`CAMetalLayer.wantsExtendedDynamicRangeContent`,
+Boost uses only public, documented APIs
+(`CAMetalLayer.wantsExtendedDynamicRangeContent`,
 `NSScreen.maximumExtendedDynamicRangeColorComponentValue`,
-`CGGetDisplayTransferByTable`/`CGSetDisplayTransferByTable`) — combined in an
-undocumented *way*, not via a private symbol. Notably, BrightIntosh (which
-uses this exact technique) is distributed on the Mac App Store today. This
-doesn't necessarily invalidate ADR-0001's conclusion (App Store review is
-subjective and could still reject this as against the spirit of the
-guidelines, and the ADR may have other standing reasons for direct
-distribution), but the ADR's stated *justification* — "no public API
-exists" — is empirically not accurate. Surfacing this rather than silently
-building around it; whether to revisit ADR-0001 is the user's call.
-
-Same staleness applies to CONTEXT.md's "Extended Brightness / Boost" glossary
-entry ("unlocked via private Apple APIs") — noted here rather than edited
-directly, since updating the domain glossary is `/domain-modeling`'s job, not
-this ticket's.
+`CGGetDisplayTransferByTable`/`CGSetDisplayTransferByTable`), combined in an
+undocumented way rather than through a private symbol. BrightIntosh ships
+the same technique on the Mac App Store. Nominal brightness
+(`DisplayServices`) and the auto-brightness switch (`CoreBrightness`) still
+rely on private frameworks, so they can break on a macOS update, and BrightBoi
+is distributed directly rather than through the App Store for that reason.
 
 ## Risks / caveats
 
 - Every mechanism here is undocumented *behavior*, even where the
   individual API calls are public — Apple can change EDR-triggering
   behavior, gamma table semantics, or `IOMFBBrightnessLevel`'s meaning in
-  any macOS update. This is accepted per ADR-0001 as inherent to the
-  feature.
+  any macOS update. That risk is inherent to the feature.
 - `CoreDisplay_Display_SetUserBrightness` was tested and found unreliable —
   don't resurrect it for the real implementation without new evidence.
 - The `IOMFBBrightnessLevel`/`AppleCLCD2` IORegistry keys are internal DCP
   driver counters, not a public API — fine for manual verification, risky
   to hard-depend on in shipped code.
 - BrightIntosh's source is GPLv3; it was read for research but not copied.
-  Ticket 04/05's implementation must be an independent reimplementation of
-  the technique described above, not a port of their code.
+  BrightBoi's implementation is an independent reimplementation of the
+  technique described above, not a port of their code.
 - No photometer was available to verify absolute nits for the Boost range;
   only the Nominal anchor (100% = 500 nits on this panel, via the
   independently-verified Nominal register) is grounded. The 200% anchor rests
