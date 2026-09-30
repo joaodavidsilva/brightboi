@@ -29,16 +29,36 @@ continuous slider:
   meant (about 500 nits on the 14-inch and 16-inch M1 Pro and M1 Max panels). 100–200% is
   **Extended Brightness / Boost**: a tiny invisible window keeps the display's extended
   dynamic range (EDR) headroom available, and BrightBoi scales the display's gamma table
-  into it. The top of the slider is capped at about 1000 nits, the panel's sustained
-  full-screen rating, not its 1600-nit peak-highlight spec that would just throttle back down
+  into it. Boost uses public macOS APIs (an invisible Metal overlay and
+  `CGSetDisplayTransferByTable`) and needs no HDR content. The private frameworks BrightBoi
+  loads are DisplayServices, for the 0–100% range, and CoreBrightness, for the auto-brightness
+  switch. Nits figures in the app are estimates.
+- **Adjustable Boost ceiling.** Settings lets you lower the top of the slider anywhere from
+  100% to 200%. 200%, about 1000 nits, is the most BrightBoi offers: the panel's sustained
+  full-screen rating, not its 1600-nit peak-highlight spec, which would just throttle back down
   under sustained use.
-- **Auto-Brightness Takeover.** Disables macOS's ambient-light-sensor-driven auto-brightness on
-  launch, so it can never silently override the level you chose.
-- **5% steps** on both the slider and the physical brightness keys, so you always land on a
-  clean, repeatable value.
-- **Persists** your chosen level across sleep/wake, relaunch, and reboot, and **launches at
-  login** so Auto-Brightness Takeover is active from the moment you log in.
+- **Brightness keys with an on-screen HUD.** The brightness keys (F1/F2) step 5% at a time across
+  the whole range, and a HUD shows the level. In Settings you can remap them to any shortcut that
+  includes a modifier key (Reset to F1/F2 brings the default back), or switch the remap off and
+  hand the keys back to macOS.
+- **Quick-set buttons.** Dim, 100% and Max boi jump straight to a level in the popover.
+- **Advisories in the popover.** BrightBoi says so when the Key Remap is not active, the built-in
+  display is off, Boost is paused (Invert Colors) or blocked by another app, brightness control
+  is blocked or locked by a display preset, Low Power Mode is on, you are above 170% on battery
+  power, or the Mac is running hot while boosted.
+- **Auto-brightness takeover.** By default BrightBoi turns off macOS's ambient-light
+  auto-brightness while it runs, so the light sensor cannot undo the level you chose, and
+  restores your original setting when you quit. A switch in Settings turns this off.
+- **Persists** your chosen level across sleep/wake, relaunch and reboot, and **launches at
+  login** (on by default, with a switch in Settings).
+- **First-run setup** walks through the Accessibility permission; "Skip — slider only" skips it.
+- **Support window.** A short support prompt can appear a week after you first start BrightBoi and
+  then at most once a month. It never takes focus from the app you are using. "Support
+  BrightBoi…" in Settings opens it at any time.
 - **Built-in display only** — never touches an external monitor.
+
+Open Settings from **Settings…** in the popover (⌘, while the popover is open). If the
+menu bar icon is hidden, opening BrightBoi again also opens Settings.
 
 Boost is only available on Macs with an XDR (mini-LED) display. On a non-XDR Apple silicon
 Mac (e.g. MacBook Air), BrightBoi still works, but the slider simply caps at 100% Nominal
@@ -55,20 +75,23 @@ exist there.
 
 1. Download the latest zip (`BrightBoi-<version>.zip`) from [Releases](https://github.com/joaodavidsilva/brightboi/releases/latest).
 2. Unzip it and drag `BrightBoi.app` into `/Applications`.
-3. **First launch:** this app isn't notarized yet (see [Known limitations](#known-limitations)
-   below), so Gatekeeper blocks a plain double-click with an "unidentified developer" warning.
-   - **macOS 15 and later:** double-click `BrightBoi.app`, dismiss the warning, then open
-     **System Settings > Privacy & Security**, scroll to the Security section and choose
-     **Open Anyway** next to BrightBoi. Confirm in the dialog that appears.
-   - **macOS 14:** right-click (or Control-click) `BrightBoi.app`, choose **Open**, then
-     confirm in the dialog.
+3. **First launch:** this app isn't notarized (see [Known limitations](#known-limitations)
+   below), so macOS blocks the first launch until you approve it.
+   - **macOS 15 and later:** double-click `BrightBoi.app` and click **Done** on the dialog
+     (it says Apple could not verify "BrightBoi" is free of malware). Then open
+     **System Settings > Privacy & Security**, scroll to the **Security** section and click
+     **Open Anyway**, authenticate, and click **Open Anyway** again. The button appears only
+     after a blocked launch attempt, and only for about an hour.
+   - **macOS 14:** Control-click `BrightBoi.app`, choose **Open**, then confirm.
+   - **Advanced:** after moving the app to `/Applications`, remove the quarantine flag instead:
+     `xattr -dr com.apple.quarantine /Applications/BrightBoi.app`
 
    Doing this once is enough: macOS remembers your choice after that.
 4. A sun icon appears in your menu bar. Click it for the brightness slider.
-5. To take over the physical brightness keys (F1/F2), BrightBoi needs the **Accessibility**
-   permission. Grant it in System Settings when prompted. BrightBoi picks the permission up while it
-   runs; if the keys still stay with macOS, use "Relaunch BrightBoi" in Settings. The slider and
-   custom shortcuts work without it.
+5. Grant **Accessibility** in the setup window, or later in **Settings > Permissions** (needed
+   only for the brightness keys; if Settings also lists **Input Monitoring**, grant that too).
+   Status updates while BrightBoi runs. If the keys still stay with macOS, use **Relaunch
+   BrightBoi** in Settings. The slider and custom shortcuts work without these permissions.
 
 ## Updating
 
@@ -103,11 +126,67 @@ download page.
   brightness-key handling in the other app, or turn off "Let BrightBoi own F1 / F2" in Settings.
 - **Screen saver and lock screen.** Boost steps aside while the screen saver or lock screen
   covers the display, and returns when they end.
-- **Not notarized.** Releases are currently signed with a development certificate and are not
-  notarized by Apple, so Gatekeeper asks you to confirm the first launch (see
-  [Install](#install)). Because the signing certificate will change once a Developer ID
-  release ships, macOS may ask you to grant Accessibility and Input Monitoring to BrightBoi
-  again after that update.
+- **Other gamma and XDR tools.** Boost rewrites the built-in display's gamma table, so do not
+  run it together with other tools that do the same, such as BrightIntosh, Lunar's software
+  dimming, BetterDisplay's XDR upscaling or f.lux. Night Shift is not a known conflict.
+- **Undocumented behaviour.** Boost relies on macOS behaviour that Apple has not documented,
+  and the 0–100% range and the auto-brightness switch use private frameworks. A macOS update
+  can break any of them.
+- **After a crash.** A crash or force-quit skips the restore of macOS auto-brightness. BrightBoi
+  keeps your original setting and restores it on the next clean quit. If auto-brightness looks
+  stuck off, turn **Automatically adjust brightness** back on in System Settings > Displays.
+- **Not notarized.** Releases are signed with an Apple Development certificate (a stable Team
+  ID) but are not Developer ID-signed or notarized, so macOS blocks the first launch until you
+  approve it (see [Install](#install)). Because the signing certificate will change once a
+  Developer ID release ships, macOS may ask you to grant Accessibility and Input Monitoring to
+  BrightBoi again after that update.
+
+## Troubleshooting
+
+**The brightness keys stopped working after an update.** macOS ties Accessibility and Input
+Monitoring grants to the app's code signature, and a build signed differently counts as a new
+app. In System Settings > Privacy & Security > Accessibility (and Input Monitoring, if
+BrightBoi is listed there) select BrightBoi, click the minus button, relaunch BrightBoi and
+grant the permission again. From Terminal instead:
+
+```bash
+tccutil reset Accessibility com.ptlghost.BrightBoi && tccutil reset ListenEvent com.ptlghost.BrightBoi
+```
+
+then relaunch BrightBoi.
+
+## Uninstall
+
+1. Turn off **Launch at login** in Settings.
+2. Quit BrightBoi with its **Quit** button. This restores macOS auto-brightness.
+3. Check **Automatically adjust brightness** in System Settings > Displays.
+4. Delete `/Applications/BrightBoi.app`.
+5. Optionally clear what it left behind. This also resets the first-run setup:
+
+   ```bash
+   tccutil reset Accessibility com.ptlghost.BrightBoi
+   tccutil reset ListenEvent com.ptlghost.BrightBoi
+   defaults delete com.ptlghost.BrightBoi
+   ```
+
+## Privacy
+
+BrightBoi has no analytics and no accounts.
+
+- **Network.** BrightBoi contacts nothing unless you ask it to. **Check for Updates…** in
+  Settings, or the optional daily check you can switch on, asks github.com for the latest
+  release. The only web pages it opens are that release page and the optional Buy Me a Coffee
+  link, and only when you click them.
+- **Keys.** The brightness keys are read as macOS media-key events, and a custom shortcut is
+  registered with macOS as a hot key. Every other key press passes through unchanged. The
+  Settings shortcut recorder reads a key only while a shortcut button is armed, and stops when
+  you press Escape, click elsewhere, leave the window or after a timeout.
+- **Logs.** Diagnostics go to the macOS unified log (subsystem `com.ptlghost.BrightBoi`, viewable
+  in Console.app). They hold error codes and feature names, never key presses.
+- **Preferences.** Settings are stored in `~/Library/Preferences/com.ptlghost.BrightBoi.plist`
+  and contain your brightness level, Boost ceiling, shortcut, settings toggles, and small
+  bookkeeping values (onboarding, support-prompt and update-check dates, launch count, and the
+  panel's observed brightness headroom).
 
 ## Building from source
 
@@ -122,6 +201,17 @@ swift test                       # run the test suite
 Packaging/build-app.sh           # debug bundle (com.ptlghost.BrightBoi.dev) in .build/
 ```
 
+Signing matters for local builds. macOS ties the Accessibility and Input Monitoring grants to
+the app's code signature. An ad-hoc signature is identified by the hash of that exact build, so
+every rebuild loses the grants and the brightness keys silently stop working. Switching between
+a local build and a release build needs the grants again for the same reason.
+`Packaging/build-app.sh` picks a signing identity in this order: the `CODESIGN_IDENTITY`
+environment variable, the first Developer ID Application certificate, the first Apple
+Development certificate, and only then ad-hoc. A free Apple ID is enough for an Apple
+Development certificate: in Xcode, open Settings > Accounts > Manage Certificates, click +, and
+choose Apple Development. `security find-identity -v -p codesigning` lists what is installed.
+`swift build` builds for the host architecture only.
+
 `Packaging/build-app.sh` builds the debug bundle by default. It runs as **BrightBoi Dev**
 with its own settings, so it does not touch an installed BrightBoi's preferences or login
 item. It goes through onboarding again, and needs its own Accessibility and Input Monitoring
@@ -134,6 +224,8 @@ It signs with a Developer ID or Apple Development certificate when one is instal
 refuses to fall back to ad-hoc signing, which would make macOS forget permission grants on
 every build. Without a certificate, set `ALLOW_ADHOC_RELEASE=1` to build an ad-hoc signed
 release bundle for local use only.
+
+To publish a release, see the notes at the top of `Packaging/release.sh` and `CHANGELOG.md`.
 
 CI builds and tests every push on macOS 15 (Xcode 16.4) and the newest hosted macOS with its
 latest stable Xcode. macOS 14 is the minimum the app supports but is not covered by CI,
