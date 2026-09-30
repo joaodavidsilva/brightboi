@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A debug build (its own bundle identifier, so its own preferences)
         // starts without launching at login; turning it on in Settings still
         // registers it. Must run before the controller reads the setting.
-        if Bundle.main.bundleIdentifier == "com.ptlghost.BrightBoi.dev" {
+        if Bundle.main.bundleIdentifier == SingleInstanceGuard.devBundleIdentifier {
             UserDefaults.standard.register(defaults: [RealBrightnessPersistence.launchAtLoginEnabledKey: false])
         }
         let permissions = PermissionsModel(checker: RealPermissionsChecker())

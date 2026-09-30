@@ -27,7 +27,12 @@ enum SingleInstanceGuard {
     }
 
     /// Every bundle identifier that drives the built-in panel.
-    static let knownBundleIdentifiers = ["com.ptlghost.BrightBoi", "com.ptlghost.BrightBoi.dev"]
+    static let releaseBundleIdentifier = "com.ptlghost.BrightBoi"
+
+    /// The identity of a local debug build.
+    static let devBundleIdentifier = "com.ptlghost.BrightBoi.dev"
+
+    static let knownBundleIdentifiers = [releaseBundleIdentifier, devBundleIdentifier]
 
     /// The known identifiers other than `identifier`: the copies that are a
     /// different identity of this app rather than another instance of it.
@@ -37,7 +42,7 @@ enum SingleInstanceGuard {
 
     /// The name the user knows a copy by, for the conflict alert.
     static func displayName(forBundleIdentifier identifier: String) -> String {
-        identifier.hasSuffix(".dev") ? "BrightBoi Dev" : "BrightBoi"
+        identifier == devBundleIdentifier ? "BrightBoi Dev" : "BrightBoi"
     }
 
     /// Text of the alert shown when a copy with the other identity is running.

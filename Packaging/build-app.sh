@@ -53,16 +53,14 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
 fi
 
 if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
-    # An ad-hoc build has no Team Identifier, so Accessibility and Input
-    # Monitoring grants do not carry over between builds. Fine for a local
-    # debug build, never for something that gets uploaded.
-    if [[ "$CONFIGURATION" == "release" && "${ALLOW_ADHOC_RELEASE:-0}" != "1" ]]; then
-        echo "error: refusing to ad-hoc sign a release build; set CODESIGN_IDENTITY (or ALLOW_ADHOC_RELEASE=1)." >&2
-        exit 1
-    fi
     echo "warning: no Developer ID Application or Apple Development identity found — signing ad-hoc for local testing only. Accessibility/Input Monitoring permission grants will not persist across relaunches under ad-hoc signing." >&2
     CODESIGN_IDENTITY="-"
-elif [[ "$CODESIGN_IDENTITY" == "-" && "$CONFIGURATION" == "release" && "${ALLOW_ADHOC_RELEASE:-0}" != "1" ]]; then
+fi
+
+# An ad-hoc build has no Team Identifier, so Accessibility and Input
+# Monitoring grants do not carry over between builds. Fine for a local
+# debug build, never for something that gets uploaded.
+if [[ "$CODESIGN_IDENTITY" == "-" && "$CONFIGURATION" == "release" && "${ALLOW_ADHOC_RELEASE:-0}" != "1" ]]; then
     echo "error: refusing to ad-hoc sign a release build; set CODESIGN_IDENTITY (or ALLOW_ADHOC_RELEASE=1)." >&2
     exit 1
 fi

@@ -118,7 +118,7 @@ final class UpdateChecker {
         case failed
     }
 
-    /// The longest an automatic check waits between two attempts.
+    /// The least time between two automatic checks.
     static let automaticCheckInterval: TimeInterval = 24 * 3600
     /// How often a running app re-examines whether a check is due.
     static let pollInterval: Duration = .seconds(3600)
@@ -245,8 +245,10 @@ final class UpdateChecker {
 
     /// The user-initiated check behind "Check for Updates…".
     func checkNow() async {
-        guard !isChecking else { return }
         manualStatus = .checking
+        // If an automatic check is running, let it finish first so the
+        // button still ends in a definite result.
+        while isChecking { try? await Task.sleep(for: .milliseconds(100)) }
         let succeeded = await performCheck()
         manualStatus = succeeded ? (availableUpdate == nil ? .upToDate : .idle) : .failed
     }
