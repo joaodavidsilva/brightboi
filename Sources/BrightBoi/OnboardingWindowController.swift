@@ -67,6 +67,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.orderFrontRegardless()
     }
 
+    /// The name assistive technology announces for the window. The title bar
+    /// hides it, so it is never drawn.
+    var windowTitle: String { window.title }
+
     func windowWillClose(_ notification: Notification) {
         model.dismissedByClose()
         onClose()

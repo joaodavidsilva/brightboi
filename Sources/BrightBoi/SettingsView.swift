@@ -9,12 +9,30 @@ import SwiftUI
 /// Rows use the system's own styles, so the window follows the platform's
 /// look in both appearances.
 struct SettingsView: View {
+    /// What the window's buttons do to the system beyond BrightBoi itself:
+    /// quit, open System Settings' Login Items list, start a fresh copy.
+    /// Injectable so a test can click every button without any of them
+    /// reaching the real thing.
+    struct Actions {
+        var quit: @MainActor () -> Void
+        var openLoginItems: @MainActor () -> Void
+        var relaunch: @MainActor () -> Void
+
+        static let live = Actions(
+            quit: { NSApplication.shared.terminate(nil) },
+            openLoginItems: { SMAppService.openSystemSettingsLoginItems() },
+            relaunch: { AppRelauncher.relaunch() }
+        )
+    }
+
     var controller: BrightnessController
     var permissions: PermissionsModel
     /// Opens the donation window. It ignores the launch-time throttle.
     var onShowSupport: () -> Void = {}
     /// The update check. `nil` where there is none (previews and tests).
     var updates: UpdateChecker?
+    /// What the buttons that reach beyond the app do; the real ones by default.
+    var actions: Actions
 
     @State private var recorder: ShortcutRecorder
 
@@ -23,8 +41,10 @@ struct SettingsView: View {
         permissions: PermissionsModel,
         recorder: ShortcutRecorder? = nil,
         onShowSupport: @escaping () -> Void = {},
-        updates: UpdateChecker? = nil
+        updates: UpdateChecker? = nil,
+        actions: Actions = .live
     ) {
+        self.actions = actions
         self.controller = controller
         self.permissions = permissions
         self.onShowSupport = onShowSupport
@@ -162,9 +182,7 @@ struct SettingsView: View {
     private func launchAtLoginNotice(state: BrightnessController.State) -> some View {
         if state.launchAtLoginNeedsApproval {
             noticeRow(style: .info, text: "Needs approval in System Settings → Login Items.") {
-                Button("Open Login Items") {
-                    SMAppService.openSystemSettingsLoginItems()
-                }
+                Button("Open Login Items") { actions.openLoginItems() }
                 .controlSize(.small)
             }
         } else if let message = state.launchAtLoginStatusMessage {
@@ -186,7 +204,7 @@ struct SettingsView: View {
                     Button("Turn on…") { permissions.requestOrOpenSettings(.accessibility) }
                         .controlSize(.small)
                 } else if permissions.inputMonitoringGranted {
-                    Button("Relaunch BrightBoi") { AppRelauncher.relaunch() }
+                    Button("Relaunch BrightBoi") { actions.relaunch() }
                         .controlSize(.small)
                 } else {
                     Button("Try again") { controller.permissionsMayHaveChanged() }
@@ -250,12 +268,15 @@ struct SettingsView: View {
 
     private func boostCeilingSection(state: BrightnessController.State) -> some View {
         Section {
-            LabeledContent("Boost ceiling") {
+            // The slider's own name and value carry the same words and numbers.
+            LabeledContent {
                 Text("\(Int(state.boostCeiling))% · \(Int(state.boostCeilingNits)) nits")
                     .monospacedDigit()
+                    .accessibilityHidden(true)
+            } label: {
+                Text("Boost ceiling")
+                    .accessibilityHidden(true)
             }
-            // The slider's own value carries the same numbers.
-            .accessibilityHidden(true)
 
             Slider(
                 value: Binding(
@@ -266,9 +287,15 @@ struct SettingsView: View {
             ) {
                 Text("Boost ceiling")
             } minimumValueLabel: {
-                Text("100%").foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                // The system makes each end label a button that nudges the
+                // slider, so each needs a name that says what it does.
+                Text("100%")
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .accessibilityLabel("Lower Boost ceiling")
             } maximumValueLabel: {
-                Text("200%").foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                Text("200%")
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                    .accessibilityLabel("Raise Boost ceiling")
             }
             .labelsHidden()
             .tint(.boost)
@@ -333,12 +360,16 @@ struct SettingsView: View {
     private func permissionRow(title: String, granted: Bool, onGrant: @escaping () -> Void) -> some View {
         LabeledContent {
             HStack(spacing: 6) {
-                Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                    .foregroundStyle(granted ? Color.green : Color.boost)
-                    .accessibilityHidden(true)
-                // Carries the row's name too, so the pair is read as one phrase.
-                Text(granted ? "Granted" : "Not granted")
-                    .accessibilityLabel(Self.permissionStatusLabel(title: title, granted: granted))
+                // One element that carries the row's name too, so the status
+                // is read as one phrase such as "Accessibility, Not granted".
+                HStack(spacing: 6) {
+                    Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(granted ? Color.green : Color.boost)
+                    Text(granted ? "Granted" : "Not granted")
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Self.permissionStatusLabel(title: title, granted: granted))
+                .accessibilityAddTraits(.isStaticText)
                 if !granted {
                     Button("Turn on…", action: onGrant)
                         .controlSize(.small)
@@ -405,9 +436,7 @@ struct SettingsView: View {
             HStack {
                 Button("Support BrightBoi…", action: onShowSupport)
                 Spacer()
-                Button("Quit BrightBoi") {
-                    NSApplication.shared.terminate(nil)
-                }
+                Button("Quit BrightBoi") { actions.quit() }
             }
         }
         .padding(EdgeInsets(top: 4, leading: 20, bottom: 16, trailing: 20))
@@ -431,14 +460,18 @@ struct SettingsView: View {
     // MARK: - Shared row building blocks
 
     /// A real labelled switch: the title names it for assistive technology,
-    /// and the subtitle is its help text.
+    /// and the subtitle is its help text. The visible title and subtitle are
+    /// hidden from accessibility, or they would be read once on their own and
+    /// again as the switch's name.
     private func toggleRow(title: String, subtitle: String? = nil, isOn: Binding<Bool>) -> some View {
         Toggle(isOn: isOn) {
             Text(title)
+                .accessibilityHidden(true)
             if let subtitle {
                 Text(subtitle)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
         }
         .accessibilityLabel(title)
@@ -446,8 +479,12 @@ struct SettingsView: View {
     }
 
     private func shortcutRow(press: BrightnessController.KeyPress, combo: KeyCombo) -> some View {
-        LabeledContent(press.label) {
+        LabeledContent {
             ShortcutPill(press: press, combo: combo, recorder: recorder)
+        } label: {
+            // The recorder's own name ("Lower brightness shortcut") says it.
+            Text(press.label)
+                .accessibilityHidden(true)
         }
     }
 

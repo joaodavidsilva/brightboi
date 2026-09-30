@@ -90,6 +90,10 @@ final class DonationWindowController: NSObject, NSWindowDelegate {
         window.delegate = self
     }
 
+    /// The name assistive technology announces for the window. The title bar
+    /// hides it, so it is never drawn.
+    var windowTitle: String { window.title }
+
     func windowWillClose(_ notification: Notification) {
         onClose()
     }

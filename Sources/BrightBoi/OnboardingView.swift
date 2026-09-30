@@ -198,6 +198,7 @@ private struct PermissionsStepView: View {
             // Name, purpose, then status, as one line for VoiceOver.
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(OnboardingCopy.permissionRowLabel(title: title, subtitle: subtitle, granted: granted))
+            .accessibilityAddTraits(.isStaticText)
             Spacer()
             if granted {
                 HStack(spacing: 4) {

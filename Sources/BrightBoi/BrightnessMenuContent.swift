@@ -13,6 +13,9 @@ struct BrightnessMenuContent: View {
     var controller: BrightnessController
     /// The update check. `nil` where there is none (previews and tests).
     var updates: UpdateChecker?
+    /// Quits the app. Injectable so a test can press the row without ending
+    /// the test process.
+    var quit: @MainActor () -> Void = { NSApplication.shared.terminate(nil) }
 
     @Environment(\.openSettings) private var openSettings
 
@@ -404,7 +407,7 @@ struct BrightnessMenuContent: View {
             .keyboardShortcut(",", modifiers: .command)
 
             Button {
-                NSApplication.shared.terminate(nil)
+                quit()
             } label: {
                 actionRow(title: "Quit BrightBoi", shortcut: "⌘Q", hint: "Command Q")
             }
