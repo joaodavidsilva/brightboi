@@ -168,3 +168,109 @@ struct HUDFadeMachineTests {
         #expect(whileFading == nil)
     }
 }
+
+@MainActor
+@Suite("HUD style")
+struct HUDStyleTests {
+    private func version(_ major: Int, _ minor: Int = 0) -> OperatingSystemVersion {
+        OperatingSystemVersion(majorVersion: major, minorVersion: minor, patchVersion: 0)
+    }
+
+    @Test("macOS 26 and later take the capsule, earlier systems keep the bezel", arguments: [
+        (14, HUDStyle.bezel), (15, .bezel), (25, .bezel), (26, .capsule), (27, .capsule), (30, .capsule)
+    ])
+    func choice(major: Int, expected: HUDStyle) {
+        #expect(HUDStyle.style(for: version(major)) == expected)
+        #expect(HUDStyle.style(for: version(major, 9)) == expected)
+    }
+
+    @Test("the background is glass only for the capsule on a system that has glass")
+    func surface() {
+        #expect(HUDStyle.capsule.surface(reduceTransparency: false, glassAvailable: true) == .glass)
+        #expect(HUDStyle.capsule.surface(reduceTransparency: false, glassAvailable: false) == .material)
+        #expect(HUDStyle.bezel.surface(reduceTransparency: false, glassAvailable: true) == .material)
+        #expect(HUDStyle.bezel.surface(reduceTransparency: false, glassAvailable: false) == .material)
+    }
+
+    @Test("Reduce Transparency always gives a solid background", arguments: [HUDStyle.bezel, .capsule])
+    func solidFallback(style: HUDStyle) {
+        #expect(style.surface(reduceTransparency: true, glassAvailable: true) == .solid)
+        #expect(style.surface(reduceTransparency: true, glassAvailable: false) == .solid)
+    }
+
+    @Test("panel sizes: the bezel is fixed, the capsule grows a line for the paused notice")
+    func sizes() {
+        #expect(HUDStyle.bezel.panelSize(isBoostPaused: false) == CGSize(width: 190, height: 190))
+        #expect(HUDStyle.bezel.panelSize(isBoostPaused: true) == CGSize(width: 190, height: 190))
+        #expect(HUDStyle.capsule.panelSize(isBoostPaused: false) == CGSize(width: 300, height: 56))
+        #expect(HUDStyle.capsule.panelSize(isBoostPaused: true) == CGSize(width: 300, height: 84))
+    }
+
+    @Test("the capsule hangs from the built-in screen's top-right corner")
+    func capsuleOrigin() {
+        let size = HUDStyle.capsule.panelSize(isBoostPaused: false)
+        let origin = BrightnessHUDController.hudOrigin(
+            panelSize: size,
+            style: .capsule,
+            screens: [(id: 7, visibleFrame: CGRect(x: 0, y: 0, width: 2560, height: 1400)),
+                      (id: 1, visibleFrame: CGRect(x: 2560, y: 40, width: 1512, height: 900))],
+            isBuiltin: { $0 == 1 }
+        )
+        #expect(origin == CGPoint(x: 2560 + 1512 - 300 - 12, y: 40 + 900 - 56 - 8))
+        #expect(BrightnessHUDController.hudOrigin(
+            panelSize: size, style: .capsule,
+            screens: [(id: 7, visibleFrame: CGRect(x: 0, y: 0, width: 100, height: 100))],
+            isBuiltin: { _ in false }
+        ) == nil)
+    }
+}
+
+@MainActor
+@Suite("HUD capsule panel", .serialized)
+struct HUDCapsulePanelTests {
+    @Test("the capsule panel takes the capsule's size and never takes focus or clicks")
+    func capsulePanel() {
+        let rig = HUDRig()
+        defer { rig.tearDown() }
+        rig.style = .capsule
+        rig.press(150)
+        #expect(rig.panel.frame.size == HUDStyle.capsule.panelSize(isBoostPaused: false))
+        #expect(rig.panel.ignoresMouseEvents)
+        #expect(!rig.panel.canBecomeKey)
+        #expect(!rig.panel.canBecomeMain)
+        #expect(rig.panel.level == .statusBar)
+    }
+
+    @Test("the capsule panel grows for the paused notice")
+    func pausedGrowth() {
+        let rig = HUDRig()
+        defer { rig.tearDown() }
+        rig.style = .capsule
+        rig.press(150)
+        rig.pressPaused()
+        #expect(rig.panel.frame.size == HUDStyle.capsule.panelSize(isBoostPaused: true))
+        #expect(rig.panel.frame.size.height == 84)
+    }
+
+    @Test("switching back to the bezel restores its size")
+    func bezelPanel() {
+        let rig = HUDRig()
+        defer { rig.tearDown() }
+        rig.style = .capsule
+        rig.press()
+        rig.style = .bezel
+        rig.press()
+        #expect(rig.panel.frame.size == HUDStyle.bezel.panelSize(isBoostPaused: false))
+    }
+
+    @Test("the VoiceOver announcement does not depend on the style", arguments: [HUDStyle.bezel, .capsule])
+    func announcement(style: HUDStyle) {
+        let rig = HUDRig()
+        defer { rig.tearDown() }
+        rig.style = style
+        rig.press(120)
+        rig.fireTimers(delay: BrightnessHUDController.announcementDebounce)
+        #expect(rig.posts.count == 1)
+        #expect(rig.posts.first?.userInfo[.announcement] as? String == "Brightness 120 percent, boosted")
+    }
+}

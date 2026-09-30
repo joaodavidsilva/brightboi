@@ -59,9 +59,12 @@ struct HUDFadeMachine: Equatable {
 /// it without a screen, real time, real animation or an assistive technology
 /// listening.
 struct HUDEnvironment {
-    /// Where the panel's bottom-left corner goes, or `nil` when the HUD must
-    /// stay away (the built-in display is not active).
-    var origin: @MainActor () -> CGPoint?
+    /// Where the panel's bottom-left corner goes for a style and panel size,
+    /// or `nil` when the HUD must stay away (the built-in display is not
+    /// active).
+    var origin: @MainActor (HUDStyle, CGSize) -> CGPoint?
+    /// Which look the HUD takes on this system.
+    var style: @MainActor () -> HUDStyle
     var reduceMotion: @MainActor () -> Bool
     /// Runs `work` after `delay` seconds and returns a closure that cancels it.
     var schedule: @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> (@MainActor () -> Void)
@@ -72,7 +75,8 @@ struct HUDEnvironment {
     var postAccessibility: @MainActor (Any, NSAccessibility.Notification, [NSAccessibility.NotificationUserInfoKey: Any]) -> Void
 
     static let live = HUDEnvironment(
-        origin: { BrightnessHUDController.builtInOrigin() },
+        origin: { style, size in BrightnessHUDController.builtInOrigin(style: style, panelSize: size) },
+        style: { HUDStyle.current },
         reduceMotion: { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion },
         schedule: { delay, work in
             let item = DispatchWorkItem { MainActor.assumeIsolated { work() } }
@@ -111,8 +115,8 @@ struct HUDEnvironment {
 /// that display is not active.
 @MainActor
 final class BrightnessHUDController {
-    /// Fraction of the screen's usable height the panel's bottom edge sits
-    /// above, matching roughly where macOS's own native HUD sits.
+    /// Fraction of the screen's usable height the bezel's bottom edge sits
+    /// above, matching roughly where the older system HUD sat.
     private static let verticalScreenFraction: CGFloat = 0.18
     static let fadeInDuration: TimeInterval = 0.12
     static let fadeOutDuration: TimeInterval = 0.35
@@ -147,8 +151,8 @@ final class BrightnessHUDController {
             autoBrightnessTakeoverEnabled: true,
             boostBlockedByOtherApp: false
         )
-        let hostingView = NSHostingView(rootView: BrightnessHUDView(state: placeholderState))
-        hostingView.frame = NSRect(origin: .zero, size: BrightnessHUDView.panelSize)
+        let hostingView = NSHostingView(rootView: BrightnessHUDView(state: placeholderState, style: environment.style()))
+        hostingView.frame = NSRect(origin: .zero, size: HUDStyle.bezel.panelSize(isBoostPaused: false))
         self.hostingView = hostingView
 
         let panel = NSPanel(
@@ -170,21 +174,32 @@ final class BrightnessHUDController {
 
     // MARK: - Pure helpers
 
-    /// Where the panel's bottom-left corner goes: centred horizontally on the
-    /// built-in screen's usable area, with its bottom edge 18% of that area's
-    /// height above the bottom. `nil` when none of `screens` is built in, so
-    /// the HUD is never drawn on an external monitor by mistake. The built-in
-    /// screen wins wherever it sits in the list.
+    /// Where the panel's bottom-left corner goes on the built-in screen's
+    /// usable area. The bezel is centred horizontally with its bottom edge
+    /// 18% of the area's height above the bottom; the capsule hangs from the
+    /// top-right corner, just under the menu bar. `nil` when none of
+    /// `screens` is built in, so the HUD is never drawn on an external
+    /// monitor by mistake. The built-in screen wins wherever it sits in the
+    /// list.
     static func hudOrigin(
         panelSize: CGSize,
+        style: HUDStyle = .bezel,
         screens: [(id: CGDirectDisplayID, visibleFrame: CGRect)],
         isBuiltin: (CGDirectDisplayID) -> Bool
     ) -> CGPoint? {
         guard let frame = screens.first(where: { isBuiltin($0.id) })?.visibleFrame else { return nil }
-        return CGPoint(
-            x: frame.midX - panelSize.width / 2,
-            y: frame.minY + frame.height * verticalScreenFraction
-        )
+        switch style {
+        case .bezel:
+            return CGPoint(
+                x: frame.midX - panelSize.width / 2,
+                y: frame.minY + frame.height * verticalScreenFraction
+            )
+        case .capsule:
+            return CGPoint(
+                x: frame.maxX - panelSize.width - HUDStyle.capsuleInset.width,
+                y: frame.maxY - panelSize.height - HUDStyle.capsuleInset.height
+            )
+        }
     }
 
     /// The fade durations, in seconds, as (in, out). Reduce Motion skips the
@@ -222,10 +237,12 @@ final class BrightnessHUDController {
     /// up for `autoDismissDelay` seconds after the *last* press, not the
     /// first. Does nothing while the built-in display is not active.
     func present(state: BrightnessController.State) {
-        guard let origin = environment.origin() else { return }
+        let style = environment.style()
+        let size = style.panelSize(isBoostPaused: state.isBoostPaused)
+        guard let origin = environment.origin(style, size) else { return }
 
-        hostingView.rootView = BrightnessHUDView(state: state)
-        panel.setFrameOrigin(origin)
+        hostingView.rootView = BrightnessHUDView(state: state, style: style)
+        panel.setFrame(NSRect(origin: origin, size: size), display: false)
 
         let durations = Self.fadeDurations(reduceMotion: environment.reduceMotion())
         switch fade.show() {
@@ -255,13 +272,14 @@ final class BrightnessHUDController {
         panel.orderOut(nil)
     }
 
-    static func builtInOrigin() -> CGPoint? {
+    static func builtInOrigin(style: HUDStyle, panelSize: CGSize) -> CGPoint? {
         guard let builtInID = BuiltInDisplay.resolveID(), BuiltInDisplay.isActive(builtInID) else { return nil }
         let screens = NSScreen.screens.compactMap { screen -> (id: CGDirectDisplayID, visibleFrame: CGRect)? in
             BuiltInDisplay.screenNumber(of: screen).map { (id: $0, visibleFrame: screen.visibleFrame) }
         }
         return hudOrigin(
-            panelSize: BrightnessHUDView.panelSize,
+            panelSize: panelSize,
+            style: style,
             screens: screens,
             isBuiltin: { $0 == builtInID }
         )

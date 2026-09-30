@@ -27,6 +27,7 @@ final class HUDRig {
 
     var origin: CGPoint? = CGPoint(x: -30_000, y: -30_000)
     var reduceMotion = false
+    var style: HUDStyle = .bezel
     private(set) var timers: [Timer] = []
     private(set) var animations: [Animation] = []
     private(set) var posts: [Post] = []
@@ -34,7 +35,8 @@ final class HUDRig {
 
     init(autoDismissDelay: TimeInterval = 1) {
         let environment = HUDEnvironment(
-            origin: { [unowned self] in origin },
+            origin: { [unowned self] _, _ in origin },
+            style: { [unowned self] in style },
             reduceMotion: { [unowned self] in reduceMotion },
             schedule: { [unowned self] delay, work in
                 timers.append(Timer(delay: delay, work: work))
@@ -54,6 +56,13 @@ final class HUDRig {
     var panel: NSPanel { controller.panel }
     func press(_ percentage: Double = 120) {
         controller.present(state: ControllerRig(storedPercentage: percentage).controller.currentState)
+    }
+
+    /// A press in the Boost paused state (Invert Colors on).
+    func pressPaused(_ percentage: Double = 150) {
+        var state = ControllerRig(storedPercentage: percentage).controller.currentState
+        state.isBoostPaused = true
+        controller.present(state: state)
     }
 
     /// Fires the timers that are still live and have this `delay`, as if that
@@ -185,7 +194,7 @@ struct HUDBehaviourTests {
     @Test("the real fade-out ends by ordering the panel out")
     func realFadeOutOrdersOut() async throws {
         var environment = HUDEnvironment.live
-        environment.origin = { CGPoint(x: -30_000, y: -30_000) }
+        environment.origin = { _, _ in CGPoint(x: -30_000, y: -30_000) }
         environment.reduceMotion = { false }
         environment.postAccessibility = { _, _, _ in }
         let controller = BrightnessHUDController(autoDismissDelay: 0.05, environment: environment)

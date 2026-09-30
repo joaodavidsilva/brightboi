@@ -272,6 +272,8 @@ extension Theme {
         static let hud: CGFloat = 44
         /// The Boost arrow on the HUD glyph.
         static let hudBadge: CGFloat = 16
+        /// The Boost arrow on the glyph of the capsule-style HUD.
+        static let hudCapsuleBadge: CGFloat = 11
     }
 
     enum Radius {
