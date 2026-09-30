@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let persistence = RealBrightnessPersistence()
     private let hud = BrightnessHUDController()
+    /// Opens Settings in front and key, for every way of asking for it.
+    let settingsPresenter = SettingsPresenter()
+    private let reveal: AppReveal
     private var onboardingWindow: OnboardingWindowController?
     private var donationWindow: DonationWindowController?
     /// The clock and the time since the Mac started, for the donation prompt.
@@ -47,7 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             displayAccessibility: RealDisplayAccessibility(),
             permissions: permissions
         )
+        self.reveal = AppReveal(settings: settingsPresenter)
         super.init()
+        reveal.bringOnboardingForward = { [weak self] in
+            guard let onboardingWindow = self?.onboardingWindow else { return false }
+            onboardingWindow.bringToFront()
+            return true
+        }
     }
 
     /// Onboarding needs real keyboard focus (Return/Esc without a click),
@@ -73,9 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(0)
         }
 
-        SingleInstanceGuard.observeReveal { [weak self] in
-            self?.revealApp()
-        }
+        reveal.observeSecondLaunch()
 
         controller.onKeyPress = { [hud] _, state in
             hud.present(state: state)
@@ -126,21 +133,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Launching BrightBoi again (Finder, Spotlight, `open`) is the way back in
-    /// when its menu bar item is hidden, for example behind the notch. The app
-    /// has no Dock icon and no window of its own to show, so it opens
-    /// Settings, unless onboarding is up, which is brought forward instead.
-    /// Returning `false` stops AppKit from also trying to open a window.
+    /// when its menu bar item is hidden; see `AppReveal`.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        revealApp()
-        return false
-    }
-
-    private func revealApp() {
-        if let onboardingWindow {
-            onboardingWindow.bringToFront()
-        } else {
-            NotificationCenter.default.post(name: BrightnessMenuBarIcon.openSettingsRequested, object: nil)
-        }
+        reveal.handleReopen()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

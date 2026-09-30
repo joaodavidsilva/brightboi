@@ -53,6 +53,9 @@ enum SingleInstanceGuard {
         )
     }
 
+    /// The system-wide center copies of the app talk to each other through.
+    static var systemCenter: NotificationCenter { DistributedNotificationCenter.default() }
+
     static let revealNotificationName = Notification.Name("com.ptlghost.BrightBoi.reveal")
 
     private static let terminationTimeout: TimeInterval = 5
@@ -158,20 +161,25 @@ enum SingleInstanceGuard {
 
     /// Signals the already-running copy to open its Settings window, so that
     /// starting BrightBoi again always shows the user something, even when
-    /// the running copy's menu bar item is hidden.
-    private static func revealRunningCopy() {
-        DistributedNotificationCenter.default().postNotificationName(
-            revealNotificationName,
-            object: nil,
-            userInfo: nil,
-            deliverImmediately: true
-        )
+    /// the running copy's menu bar item is hidden. `center` is the system-wide
+    /// distributed center; a test passes a private one.
+    static func revealRunningCopy(center: NotificationCenter = systemCenter) {
+        if let distributed = center as? DistributedNotificationCenter {
+            distributed.postNotificationName(revealNotificationName, object: nil, userInfo: nil, deliverImmediately: true)
+        } else {
+            center.post(name: revealNotificationName, object: nil)
+        }
     }
 
     /// Called once by the surviving copy so a later launch attempt reveals
     /// this one (by opening Settings) instead of starting a second process.
-    static func observeReveal(_ onReveal: @escaping @MainActor () -> Void) {
-        DistributedNotificationCenter.default().addObserver(forName: revealNotificationName, object: nil, queue: .main) { _ in
+    /// Returns the observer, for a caller that wants to stop listening.
+    @discardableResult
+    static func observeReveal(
+        center: NotificationCenter = systemCenter,
+        _ onReveal: @escaping @MainActor () -> Void
+    ) -> NSObjectProtocol {
+        center.addObserver(forName: revealNotificationName, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
                 onReveal()
             }

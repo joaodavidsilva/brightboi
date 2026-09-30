@@ -167,15 +167,6 @@ struct PopoverTests {
         #expect(MenuRowButtonStyle.highlightOpacity(isPressed: true, isHovered: true) == 0.15)
     }
 
-    @Test func settingsActivatesTheAppBeforeOpening() {
-        var calls: [String] = []
-        BrightnessMenuContent.openSettingsWindow(
-            activate: { calls.append("activate") },
-            open: { calls.append("open") }
-        )
-        #expect(calls == ["activate", "open"])
-    }
-
     // MARK: Header
 
     private func headerHeight(isBoosted: Bool, isBoostPaused: Bool) -> CGFloat {
@@ -193,7 +184,7 @@ struct PopoverTests {
     // MARK: Advisories wrap instead of truncating
 
     private func sizes(of controller: BrightnessController, updates: UpdateChecker? = nil) -> (minimum: CGFloat, ideal: CGFloat) {
-        let hosting = NSHostingController(rootView: BrightnessMenuContent(controller: controller, updates: updates))
+        let hosting = NSHostingController(rootView: BrightnessMenuContent(controller: controller, updates: updates, settings: .inert()))
         let minimum = hosting.sizeThatFits(in: .zero).height
         let ideal = hosting.sizeThatFits(in: CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)).height
         return (minimum, ideal)

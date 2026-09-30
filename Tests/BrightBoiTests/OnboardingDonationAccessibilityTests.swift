@@ -201,7 +201,7 @@ struct OnboardingDonationAccessibilityTests {
         for (name, level) in [("Dim", 40.0), ("100%", 100.0), ("Max boi", 200.0)] {
             OffscreenHost<BrightnessMenuContent>.expectFrameClicks(button: name, clickOutside: false, make: {
                 let rig = ControllerRig(storedPercentage: 65)
-                let host = OffscreenHost(BrightnessMenuContent(controller: rig.controller, updates: nil, quit: {}))
+                let host = OffscreenHost(BrightnessMenuContent(controller: rig.controller, updates: nil, settings: .inert(), quit: {}))
                 return (host, { rig.controller.currentState.percentage == level ? 1 + rig.display.appliedPercentages.count : 0 })
             })
         }

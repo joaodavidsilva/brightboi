@@ -24,12 +24,10 @@ import SwiftUI
 struct BrightnessMenuBarIcon: View {
     var controller: BrightnessController
 
-    /// Posted, in process, when something other than the popover asks the
-    /// app to open its Settings window: a relaunch from Finder or Spotlight,
-    /// or a second copy starting. Observed here because `openSettings` is an
-    /// environment action, and this label is the one view that is always
-    /// mounted.
-    static let openSettingsRequested = Notification.Name("com.ptlghost.BrightBoi.openSettingsRequested")
+    /// Gets the open-Settings action, which SwiftUI only gives to a view. This
+    /// label is the one view that is always mounted, so a request to open
+    /// Settings that does not come from the popover can still reach it.
+    var settings: SettingsPresenter
 
     @Environment(\.openSettings) private var openSettings
 
@@ -39,9 +37,7 @@ struct BrightnessMenuBarIcon: View {
         Image(nsImage: Self.image(fraction: state.iconFillFraction, isBoosted: state.isBoosted, description: label))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(label)
-            .onReceive(NotificationCenter.default.publisher(for: Self.openSettingsRequested)) { _ in
-                BrightnessMenuContent.openSettingsWindow { openSettings() }
-            }
+            .onAppear { settings.register { openSettings() } }
     }
 
     // MARK: - Pure helpers

@@ -13,6 +13,9 @@ struct BrightnessMenuContent: View {
     var controller: BrightnessController
     /// The update check. `nil` where there is none (previews and tests).
     var updates: UpdateChecker?
+    /// Opens Settings in front and key. Injected, so a test can press the row
+    /// without activating the real app.
+    var settings: SettingsPresenter
     /// Quits the app. Injectable so a test can press the row without ending
     /// the test process.
     var quit: @MainActor () -> Void = { NSApplication.shared.terminate(nil) }
@@ -383,23 +386,10 @@ struct BrightnessMenuContent: View {
         }
     }
 
-    /// Brings the app forward, then opens Settings. A menu bar app is never
-    /// active when its popover's row is clicked, and without activating first
-    /// the Settings window can open behind whatever app is in front. The
-    /// activation goes first and is injectable so this ordering is testable
-    /// without touching the real app.
-    static func openSettingsWindow(
-        activate: () -> Void = { NSApp.activate(ignoringOtherApps: true) },
-        open: () -> Void
-    ) {
-        activate()
-        open()
-    }
-
     private func actionsList() -> some View {
         VStack(spacing: 0) {
             Button {
-                Self.openSettingsWindow { openSettings() }
+                settings.show(using: { openSettings() })
             } label: {
                 actionRow(title: "Settings…", shortcut: "⌘,", hint: "Command comma")
             }

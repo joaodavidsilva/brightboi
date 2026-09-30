@@ -15,7 +15,7 @@ struct PopoverAccessibilityTests {
         _ rig: ControllerRig,
         quit: @escaping @MainActor () -> Void = {}
     ) -> OffscreenHost<BrightnessMenuContent> {
-        OffscreenHost(BrightnessMenuContent(controller: rig.controller, updates: nil, quit: quit))
+        OffscreenHost(BrightnessMenuContent(controller: rig.controller, updates: nil, settings: .inert(), quit: quit))
     }
 
     private func slider(in host: OffscreenHost<BrightnessMenuContent>) throws -> AXNode {
