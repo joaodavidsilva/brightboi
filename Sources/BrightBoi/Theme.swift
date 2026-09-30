@@ -158,6 +158,13 @@ enum Theme {
         light: Shade(hex: 0xF08C00, alpha: 0.28), dark: Shade(hex: 0xFF9F0A, alpha: 0.3),
         lightIncreased: Shade(hex: 0xF08C00, alpha: 0.45), darkIncreased: Shade(hex: 0xFF9F0A, alpha: 0.5)
     )
+    /// Lit Boost segments and the boosted glyph in the key-press HUD. Darker
+    /// than `boost` in light mode, so lit and unlit Boost segments stay
+    /// distinguishable on the HUD's light material.
+    static let hudBoost = ThemeValues(
+        light: Shade(hex: 0x9A5800), dark: Shade(hex: 0xFF9F0A),
+        lightIncreased: Shade(hex: 0x7A4500), darkIncreased: Shade(hex: 0xFFD79A)
+    )
     /// The sun in onboarding and the donation window, the brand glyph.
     static let sunGlyph = ThemeValues(light: Shade(hex: 0xE8890C), dark: Shade(hex: 0xFFCE7A))
     /// Sun-coloured text, where the glyph colour is too light to read. #8F5200 is 4.9:1 on an onboarding row.
@@ -201,6 +208,7 @@ extension Color {
     static let boostText = Theme.boostText.color
     static let boostFill = Theme.boostFill.color
     static let boostStripe = Theme.boostStripe.color
+    static let hudBoost = Theme.hudBoost.color
     static let sunGlyph = Theme.sunGlyph.color
     static let sunText = Theme.sunText.color
 
@@ -247,6 +255,8 @@ extension Theme {
         static let value = Font.system(size: 15, weight: .semibold).monospacedDigit()
         /// Section headings in Settings.
         static let sectionHeader = Font.subheadline.weight(.semibold)
+        /// The percentage under the key-press HUD meter.
+        static let hudReadout = Font.system(size: 13, weight: .semibold).monospacedDigit()
         /// The Buy Me a Coffee button keeps its brand weight.
         static let brandCTA = Font.system(size: 13.5, weight: .bold)
     }
@@ -258,6 +268,8 @@ extension Theme {
         static let donation: CGFloat = 26
         static let onboarding: CGFloat = 40
         static let hud: CGFloat = 44
+        /// The Boost arrow on the HUD glyph.
+        static let hudBadge: CGFloat = 16
     }
 
     enum Radius {

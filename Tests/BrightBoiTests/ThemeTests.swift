@@ -93,6 +93,23 @@ struct ThemeTests {
         assertHex(resolved(Theme.sunText, .light), 0x8F5200)
     }
 
+    /// The HUD's lit Boost colour must tell lit from unlit Boost segments, and
+    /// read as a glyph, at 3:1 in every look. The HUD sits on a material that
+    /// measures about #EBEBEB in light and #303030 in dark.
+    @Test(arguments: Look.allCases)
+    private func hudBoostIsLegible(look: Look) {
+        let background = Shade(hex: look.isDark ? 0x303030 : 0xEBEBEB)
+        let lit = resolved(Theme.hudBoost, look)
+        let unlit = composite(resolved(Theme.boostStripe, look), over: background)
+        #expect(contrast(lit, on: unlit) >= 3, "lit vs unlit Boost, \(look)")
+        #expect(contrast(lit, on: background) >= 3, "lit Boost vs HUD, \(look)")
+    }
+
+    @Test func hudBoostValues() {
+        assertHex(resolved(Theme.hudBoost, .light), 0x9A5800)
+        assertHex(resolved(Theme.hudBoost, .dark), 0xFF9F0A)
+    }
+
     @Test func statusAndAccentValues() {
         assertHex(resolved(Theme.accentButton, .light), 0x0071E3)
         assertHex(resolved(Theme.accentButton, .dark), 0x0071E3)
