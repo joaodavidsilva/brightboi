@@ -137,7 +137,6 @@ enum Theme {
     static let sliderNominal = ThemeValues(light: Shade(hex: 0x3A3A3C), dark: .white())
     static let sliderKnob = ThemeValues(.white())
     static let sliderKnobShadow = ThemeValues(light: .black(0.28), dark: .black(0.5))
-    static let sliderTick = ThemeValues(light: .black(0.28), dark: .black(0.55), lightIncreased: .black(0.5), darkIncreased: .black(0.7))
     static let pageDotActive = ThemeValues(light: .black(0.6), dark: .white(0.85))
     static let pageDotInactive = ThemeValues(light: .black(0.16), dark: .white(0.22), lightIncreased: .black(0.35), darkIncreased: .white(0.4))
 
@@ -194,7 +193,6 @@ extension Color {
     static let sliderNominal = Theme.sliderNominal.color
     static let sliderKnob = Theme.sliderKnob.color
     static let sliderKnobShadow = Theme.sliderKnobShadow.color
-    static let sliderTick = Theme.sliderTick.color
     static let pageDotActive = Theme.pageDotActive.color
     static let pageDotInactive = Theme.pageDotInactive.color
 

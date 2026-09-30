@@ -28,6 +28,9 @@ struct AdvisoryBanner<Accessory: View>: View {
             Image(systemName: icon)
                 .font(.system(size: Theme.GlyphSize.inline))
                 .foregroundStyle(style == .attention ? Color.boostText : Color.textSecondary)
+                // A fixed column, so the text lines up across banners whose
+                // symbols differ in width.
+                .frame(width: 14, alignment: .center)
             Text(text)
                 .font(Theme.Typography.secondary)
                 .foregroundStyle(Color.textRow)
