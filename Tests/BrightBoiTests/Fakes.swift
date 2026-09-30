@@ -428,3 +428,27 @@ final class ManualPersistScheduler {
         work?()
     }
 }
+
+/// Stands in for the recorder's `sleep`: every call suspends until the test
+/// releases it, so a timeout elapses when the test says so, not when a
+/// loaded CI runner happens to get around to it.
+@MainActor
+final class ManualSleeper {
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var released = 0
+
+    func sleep(_ duration: Duration) async {
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    /// Lets the oldest sleep that is still waiting return. Waits, up to a
+    /// generous limit, for that sleep to have started, then gives the woken
+    /// task time to run.
+    func releaseNext() async {
+        await settle { waiting.count > released }
+        guard waiting.count > released else { return }
+        waiting[released].resume()
+        released += 1
+        for _ in 0..<10 { await Task.yield() }
+    }
+}

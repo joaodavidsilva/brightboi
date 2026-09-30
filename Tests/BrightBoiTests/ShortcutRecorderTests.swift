@@ -24,7 +24,8 @@ struct ShortcutRecorderTests {
     private func makeFixture(
         timeout: Duration = .seconds(30),
         rejectionDuration: Duration = .seconds(3),
-        context: ShortcutContext = ShortcutContext()
+        context: ShortcutContext = ShortcutContext(),
+        sleeper: ManualSleeper? = nil
     ) -> Fixture {
         let persistence = FakeBrightnessPersistence()
         let keyTap = FakeKeyTap()
@@ -49,7 +50,14 @@ struct ShortcutRecorderTests {
             timeout: timeout,
             rejectionDuration: rejectionDuration,
             context: { context },
-            announce: { announcements.messages.append($0) }
+            announce: { announcements.messages.append($0) },
+            sleep: { duration in
+                if let sleeper {
+                    await sleeper.sleep(duration)
+                } else {
+                    try? await Task.sleep(for: duration)
+                }
+            }
         )
         return Fixture(recorder: recorder, controller: controller, keyTap: keyTap, persistence: persistence, announcements: announcements)
     }
@@ -153,23 +161,31 @@ struct ShortcutRecorderTests {
 
     @Test("two rejections in a row each stay for the full duration")
     func secondRejectionKeepsFullDuration() async throws {
-        let f = makeFixture(rejectionDuration: .milliseconds(400))
+        let sleeper = ManualSleeper()
+        let f = makeFixture(sleeper: sleeper)
         f.recorder.toggle(.raise)
         f.keyTap.simulateCapture(KeyCombo(modifiers: [], keyCode: 0x0B))
-        try await Task.sleep(for: .milliseconds(250))
         f.recorder.toggle(.raise)
         f.keyTap.simulateCapture(KeyCombo(modifiers: [], keyCode: 0x0B))
-        // The first rejection would have expired by now had it not been replaced.
-        try await Task.sleep(for: .milliseconds(250))
+        // Sleeps start in order: armed timeout, first rejection, armed
+        // timeout, second rejection. The first rejection's timer runs out
+        // here, but it was replaced, so it must not clear the second.
+        await sleeper.releaseNext()
+        await sleeper.releaseNext()
+        await sleeper.releaseNext()
         #expect(f.recorder.rejection != nil)
-        try await Task.sleep(for: .milliseconds(400))
+        await sleeper.releaseNext()
+        await settle { f.recorder.rejection == nil }
         #expect(f.recorder.rejection == nil)
     }
 
     @Test("an armed pill gives up after the timeout")
     func timesOut() async throws {
-        let f = makeFixture(timeout: .milliseconds(60))
+        let sleeper = ManualSleeper()
+        let f = makeFixture(sleeper: sleeper)
         f.recorder.toggle(.raise)
+        #expect(f.recorder.armed == .raise)
+        await sleeper.releaseNext()
         await settle { f.recorder.armed == nil }
         #expect(f.recorder.armed == nil)
         #expect(f.keyTap.isCapturing == false)

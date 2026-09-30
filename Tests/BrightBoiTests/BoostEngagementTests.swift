@@ -646,18 +646,19 @@ struct BoostEngagementTests {
         let harness = BoostHarness()
         harness.engagement.engage(boostFraction: 1.0)
         harness.appCenter.post(name: NSApplication.willTerminateNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(80))
+        await settle { harness.engagement.isEngaged == false }
         #expect(harness.engagement.isEngaged == false)
         #expect(harness.tables.live == FakeGammaTables.clamped(harness.baseline))
     }
 }
 
-/// Waits, up to two seconds, for a main-actor condition that a posted
-/// notification is expected to bring about. Fixed sleeps are too tight when
-/// the whole suite runs at once.
+/// Waits, up to 30 seconds, for a main-actor condition that a posted
+/// notification or a released timer is expected to bring about. The limit is
+/// generous because it only matters when the test is going to fail anyway;
+/// fixed sleeps are too tight on a loaded CI runner.
 @MainActor
 func settle(_ condition: () -> Bool) async {
-    let deadline = ContinuousClock.now + .seconds(2)
+    let deadline = ContinuousClock.now + .seconds(30)
     while !condition(), ContinuousClock.now < deadline {
         try? await Task.sleep(for: .milliseconds(10))
     }

@@ -31,6 +31,7 @@ final class ShortcutRecorder {
     @ObservationIgnored private let controller: BrightnessController
     @ObservationIgnored private let context: () -> ShortcutContext
     @ObservationIgnored private let announce: (String) -> Void
+    @ObservationIgnored private let sleep: @MainActor (Duration) async -> Void
 
     @ObservationIgnored private var anchors: [BrightnessController.KeyPress: WeakView] = [:]
     @ObservationIgnored private var monitors: [Any] = []
@@ -47,13 +48,15 @@ final class ShortcutRecorder {
         timeout: Duration = .seconds(30),
         rejectionDuration: Duration = .seconds(3),
         context: @escaping () -> ShortcutContext = { ShortcutContext.current() },
-        announce: @escaping (String) -> Void = { AccessibilityNotification.Announcement($0).post() }
+        announce: @escaping (String) -> Void = { AccessibilityNotification.Announcement($0).post() },
+        sleep: @escaping @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.controller = controller
         self.timeout = timeout
         self.rejectionDuration = rejectionDuration
         self.context = context
         self.announce = announce
+        self.sleep = sleep
     }
 
     // MARK: - Arming
@@ -82,8 +85,8 @@ final class ShortcutRecorder {
             self?.submit(combo)
         }
         installMonitors()
-        timeoutTask = Task { [weak self, timeout] in
-            try? await Task.sleep(for: timeout)
+        timeoutTask = Task { [weak self, timeout, sleep] in
+            await sleep(timeout)
             guard !Task.isCancelled else { return }
             self?.cancel()
         }
@@ -122,8 +125,8 @@ final class ShortcutRecorder {
         rejection = Rejection(press: press, message: message)
         announce(message)
         rejectionTask?.cancel()
-        rejectionTask = Task { [weak self, rejectionDuration] in
-            try? await Task.sleep(for: rejectionDuration)
+        rejectionTask = Task { [weak self, rejectionDuration, sleep] in
+            await sleep(rejectionDuration)
             guard !Task.isCancelled else { return }
             self?.rejection = nil
         }
