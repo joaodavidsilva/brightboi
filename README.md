@@ -20,6 +20,15 @@
 
 ## What it does
 
+<p align="center">
+  <img src="docs/images/popover-nominal.png" width="240" height="257" alt="The BrightBoi popover at 60%: a large percentage with an estimate in nits, a slider from 0 to 200%, and Dim, 100% and Max boi buttons">
+  &nbsp;
+  <img src="docs/images/popover-boost.png" width="240" height="257" alt="The popover at 150% with a BOOSTED badge and the slider's amber Boost section filled">
+  &nbsp;
+  <img src="docs/images/hud.png" width="150" height="150" alt="The on-screen HUD showing 80% with a segmented level bar">
+</p>
+<p align="center"><sub>Rendered from the app's own views. On screen, macOS draws the popover and HUD on a translucent material.</sub></p>
+
 Macs with a Liquid Retina XDR display (the mini-LED MacBook Pros) have real brightness
 headroom that Control Center never lets you touch, and third-party apps that unlock it for
 everyday use are mostly paid downloads. BrightBoi gives you that control for free, as a single
