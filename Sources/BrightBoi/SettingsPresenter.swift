@@ -5,118 +5,106 @@ import SwiftUI
 /// arrives: the popover's row, Command-comma, opening the app again from
 /// Finder or Spotlight, or a second copy starting.
 ///
-/// A menu bar app is never the active app when any of these happens, and an
-/// inactive accessory app's new window opens behind whatever is in front, or
-/// is neither key nor on screen over a full-screen app. So every request
-/// closes the popover, activates the app, opens the window, and then orders
-/// the window forward and makes it key.
+/// The window is owned here, not by a SwiftUI `Settings` scene. A scene's
+/// open action needs a window or a main menu to be handled, and this
+/// accessory app has neither while only its menu bar item is showing, so the
+/// request had nowhere to land. An `NSWindow` that this class creates and
+/// orders forward itself cannot fail that way.
 ///
-/// The popover is hosted outside any scene, where SwiftUI's open-Settings
-/// action is not reliably available, so the request goes down the responder
-/// chain to the Settings menu command. The window is fronted as soon as it
-/// reports in; it registers itself with `registersAsSettingsWindow`.
+/// A menu bar app is never the active app when a request arrives, and an
+/// inactive accessory app's window opens behind whatever is in front, or is
+/// neither key nor on screen over a full-screen app. So every request closes
+/// the popover, asks to activate the app, and then orders the window forward
+/// and makes it key, without depending on the activation being granted.
 ///
-/// Closing the popover, activation, the responder-chain call and ordering the
-/// window forward are injectable, so a test can drive every path without
-/// touching the real app.
+/// There is at most one window: a request while it is open brings that one
+/// forward, and closing it releases it.
+///
+/// Closing the popover, activation, creating the window and ordering it
+/// forward are injectable, so a test can drive every path without touching
+/// the real app.
 @MainActor
 final class SettingsPresenter {
+    private let makeWindow: () -> NSWindow
     private let activate: () -> Void
-    private let openThroughResponderChain: () -> Bool
     private let front: (NSWindow) -> Void
+    private let notifications: NotificationCenter
 
     /// Runs first on every request, to put away the popover that may have
     /// asked for it.
     var willShow: () -> Void = {}
-    private weak var window: NSWindow?
-    /// While set and in the future, a Settings window that reports in is
-    /// fronted: the request that asked for it is still recent. A request that
-    /// produced no window (the responder chain found no target) must not let
-    /// a much later, unrelated registration come forward unprompted.
-    private var frontUntil: Date?
-    private let now: () -> Date
-
-    /// How long after a request a late window still counts as its answer.
-    static let lateWindowGrace: TimeInterval = 3
+    /// The open Settings window, if there is one.
+    private(set) var window: NSWindow?
+    private var closeObserver: NSObjectProtocol?
 
     init(
+        makeWindow: @escaping () -> NSWindow,
         activate: @escaping () -> Void = { NSApplication.shared.activate(ignoringOtherApps: true) },
-        openThroughResponderChain: @escaping () -> Bool = {
-            SettingsPresenter.sendOpenAction { NSApplication.shared.sendAction($0, to: nil, from: nil) }
-        },
         front: @escaping (NSWindow) -> Void = { window in
             window.orderFrontRegardless()
             window.makeKey()
         },
-        now: @escaping () -> Date = Date.init
+        notifications: NotificationCenter = .default
     ) {
-        self.now = now
+        self.makeWindow = makeWindow
         self.activate = activate
-        self.openThroughResponderChain = openThroughResponderChain
         self.front = front
-    }
-
-    /// Asks the responder chain to open Settings, with the current command and
-    /// then the one older systems used. `send` reports whether a target took it.
-    static func sendOpenAction(_ send: (Selector) -> Bool) -> Bool {
-        send(Selector(("showSettingsWindow:"))) || send(Selector(("showPreferencesWindow:")))
-    }
-
-    /// Called by the Settings window's content when it lands in a window.
-    func register(window: NSWindow) {
-        self.window = window
-        if let until = frontUntil {
-            frontUntil = nil
-            if now() < until { front(window) }
-        }
+        self.notifications = notifications
     }
 
     /// Brings the app forward and opens Settings in front and key.
     func show() {
         willShow()
         activate()
-        _ = openThroughResponderChain()
-        if let window {
-            front(window)
-        } else {
-            frontUntil = now().addingTimeInterval(Self.lateWindowGrace)
+        let window = openWindow()
+        front(window)
+    }
+
+    /// The open window, or a new one if there is none.
+    private func openWindow() -> NSWindow {
+        if let window { return window }
+        let window = makeWindow()
+        self.window = window
+        closeObserver = notifications.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.windowClosed() }
         }
+        return window
+    }
+
+    private func windowClosed() {
+        if let closeObserver { notifications.removeObserver(closeObserver) }
+        closeObserver = nil
+        window = nil
     }
 }
 
-/// Reports the window its content ends up in.
-private struct WindowReader: NSViewRepresentable {
-    var onWindow: (NSWindow) -> Void
+/// Builds the Settings window around `SettingsView`.
+enum SettingsWindow {
+    static let title = "BrightBoi Settings"
 
-    func makeNSView(context: Context) -> NSView {
-        Reader(onWindow: onWindow)
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    private final class Reader: NSView {
-        let onWindow: (NSWindow) -> Void
-
-        init(onWindow: @escaping (NSWindow) -> Void) {
-            self.onWindow = onWindow
-            super.init(frame: .zero)
-        }
-
-        required init?(coder: NSCoder) { nil }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if let window { onWindow(window) }
-        }
-    }
-}
-
-extension View {
-    /// Tells `presenter` which window this content lives in, so it can be
-    /// ordered forward once opened.
-    func registersAsSettingsWindow(_ presenter: SettingsPresenter) -> some View {
-        background(WindowReader { window in
-            MainActor.assumeIsolated { presenter.register(window: window) }
-        })
+    @MainActor
+    static func make(
+        controller: BrightnessController,
+        permissions: PermissionsModel,
+        onShowSupport: @escaping () -> Void,
+        updates: UpdateChecker?
+    ) -> NSWindow {
+        let host = NSHostingController(rootView: SettingsView(
+            controller: controller,
+            permissions: permissions,
+            onShowSupport: onShowSupport,
+            updates: updates
+        ))
+        let window = NSWindow(contentViewController: host)
+        window.title = title
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        // Opens on the space the user is on, and over a full-screen app.
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.setContentSize(host.view.fittingSize)
+        window.center()
+        return window
     }
 }

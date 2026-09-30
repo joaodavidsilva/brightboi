@@ -4,31 +4,39 @@ import Testing
 @testable import BrightBoi
 
 /// Records what a `SettingsPresenter` does, in order, without activating the
-/// real app, sending anything down the real responder chain or ordering a real
-/// window forward.
+/// real app or ordering a real window forward. The windows it makes are plain
+/// borderless windows that are never shown.
 @MainActor
 final class PresenterLog {
     private(set) var events: [String] = []
     private(set) var fronted: [NSWindow] = []
-    var responderChainAnswer = true
+    private(set) var made: [NSWindow] = []
+    /// Stands in for the default center, so a test can close a window.
+    let center = NotificationCenter()
 
     func record(_ event: String) { events.append(event) }
 
-    var presenter: SettingsPresenter { presenter(now: Date.init) }
-
-    func presenter(now: @escaping () -> Date) -> SettingsPresenter {
+    var presenter: SettingsPresenter {
         SettingsPresenter(
-            activate: { [self] in record("activate") },
-            openThroughResponderChain: { [self] in
-                record("responder chain")
-                return responderChainAnswer
+            makeWindow: { [self] in
+                record("make window")
+                let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 10, height: 10), styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                made.append(window)
+                return window
             },
+            activate: { [self] in record("activate") },
             front: { [self] window in
                 record("front")
                 fronted.append(window)
             },
-            now: now
+            notifications: center
         )
+    }
+
+    /// What closing the window posts.
+    func close(_ window: NSWindow) {
+        center.post(name: NSWindow.willCloseNotification, object: window)
     }
 }
 
@@ -36,15 +44,8 @@ extension SettingsPresenter {
     /// A presenter that does nothing at all, for views under test.
     @MainActor
     static func inert() -> SettingsPresenter {
-        SettingsPresenter(activate: {}, openThroughResponderChain: { true }, front: { _ in })
+        SettingsPresenter(makeWindow: { NSWindow() }, activate: {}, front: { _ in })
     }
-}
-
-@MainActor
-private func offscreenWindow() -> NSWindow {
-    let window = NSWindow(contentRect: NSRect(x: -30_000, y: -30_000, width: 10, height: 10), styleMask: [.borderless], backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    return window
 }
 
 /// Runs the main run loop until `condition` holds or `seconds` pass.
@@ -57,39 +58,14 @@ func spinUntil(_ seconds: TimeInterval = 2, _ condition: () -> Bool) {
 }
 
 @MainActor
-@Suite("Settings open action")
-struct SettingsOpenActionTests {
-    @Test("the older command is tried when nothing handles the current one")
-    func fallsBack() {
-        var sent: [String] = []
-        let handled = SettingsPresenter.sendOpenAction { selector in
-            sent.append(NSStringFromSelector(selector))
-            return sent.count == 2
-        }
-        #expect(handled)
-        #expect(sent == ["showSettingsWindow:", "showPreferencesWindow:"])
-    }
-
-    @Test("the older command is not sent when the current one is handled")
-    func stopsAtTheFirst() {
-        var sent: [String] = []
-        #expect(SettingsPresenter.sendOpenAction { sent.append(NSStringFromSelector($0)); return true })
-        #expect(sent == ["showSettingsWindow:"])
-    }
-}
-
-@MainActor
 @Suite("Settings presenter")
 struct SettingsPresenterTests {
-    @Test("the app is activated before Settings opens, and the window is fronted after")
-    func orderIsActivateOpenFront() {
+    @Test("the app is activated, the window made, and then it is fronted, in that order")
+    func orderIsActivateMakeFront() {
         let log = PresenterLog()
-        let presenter = log.presenter
-        let window = offscreenWindow()
-        presenter.register(window: window)
-        presenter.show()
-        #expect(log.events == ["activate", "responder chain", "front"])
-        #expect(log.fronted == [window])
+        log.presenter.show()
+        #expect(log.events == ["activate", "make window", "front"])
+        #expect(log.fronted == log.made)
     }
 
     @Test("the popover is put away before anything else happens")
@@ -98,51 +74,59 @@ struct SettingsPresenterTests {
         let presenter = log.presenter
         presenter.willShow = { log.record("close popover") }
         presenter.show()
-        #expect(log.events.prefix(3) == ["close popover", "activate", "responder chain"])
+        #expect(log.events == ["close popover", "activate", "make window", "front"])
     }
 
-    @Test("a window that reports in after the request is fronted once, when it arrives")
-    func frontsALateWindow() {
+    @Test("opening twice yields one window, fronted both times")
+    func oneWindow() {
         let log = PresenterLog()
         let presenter = log.presenter
         presenter.show()
-        #expect(log.events == ["activate", "responder chain"])
-        let window = offscreenWindow()
-        presenter.register(window: window)
-        presenter.register(window: window)
-        #expect(log.events == ["activate", "responder chain", "front"])
-        #expect(log.fronted == [window])
-    }
-
-    @Test("a window that reports in long after a request that produced none is left alone")
-    func ignoresAStaleRequest() {
-        var clock = Date(timeIntervalSince1970: 1_000)
-        let log = PresenterLog()
-        let presenter = log.presenter(now: { clock })
         presenter.show()
-        clock.addTimeInterval(SettingsPresenter.lateWindowGrace + 1)
-        presenter.register(window: offscreenWindow())
-        #expect(log.fronted.isEmpty)
+        #expect(log.made.count == 1)
+        #expect(log.fronted == [log.made[0], log.made[0]])
+        #expect(log.events == ["activate", "make window", "front", "activate", "front"])
+        #expect(presenter.window === log.made[0])
     }
 
-    @Test("each request activates, opens and fronts exactly once")
-    func onceEach() {
+    @Test("a window that was closed is released, and the next request makes a new one")
+    func closedWindowIsReleased() {
         let log = PresenterLog()
         let presenter = log.presenter
-        presenter.register(window: offscreenWindow())
         presenter.show()
+        log.close(log.made[0])
+        #expect(presenter.window == nil)
         presenter.show()
-        #expect(log.events == ["activate", "responder chain", "front", "activate", "responder chain", "front"])
+        #expect(log.made.count == 2)
+        #expect(presenter.window === log.made[1])
     }
 
-    @Test("a window's content tells the presenter which window it is in")
-    func windowReaderRegisters() {
+    @Test("another window closing does not release the Settings window")
+    func otherWindowClosing() {
         let log = PresenterLog()
         let presenter = log.presenter
-        let host = OffscreenHost(Text("Settings").registersAsSettingsWindow(presenter))
-        defer { OffscreenWindows.closeAll() }
         presenter.show()
-        #expect(log.fronted == [host.window])
+        log.close(NSWindow())
+        #expect(presenter.window === log.made[0])
+    }
+
+    @Test("the real window is titled, closable, not resizable or minimizable, and hosts SettingsView")
+    func realWindowHostsSettingsView() {
+        let rig = ControllerRig()
+        let window = SettingsWindow.make(
+            controller: rig.controller, permissions: rig.permissions, onShowSupport: {}, updates: nil
+        )
+        defer { window.close() }
+        #expect(window.title == SettingsWindow.title)
+        #expect(window.styleMask.contains(.titled))
+        #expect(window.styleMask.contains(.closable))
+        #expect(!window.styleMask.contains(.resizable))
+        #expect(!window.isReleasedWhenClosed)
+        #expect(window.contentViewController is NSHostingController<SettingsView>)
+        #expect(window.collectionBehavior.contains(.fullScreenAuxiliary))
+        #expect(window.contentView?.frame.width == 480)
+        #expect((window.contentView?.frame.height ?? 0) > 0)
+        #expect(!window.isVisible)
     }
 }
 
@@ -163,7 +147,7 @@ struct AppRevealTests {
         let log = PresenterLog()
         let handled = reveal(log).handleReopen()
         #expect(handled == false)
-        #expect(log.events == ["activate", "responder chain"])
+        #expect(log.events == ["activate", "make window", "front"])
     }
 
     @Test("a reopen while onboarding is up brings onboarding forward instead of opening Settings")
@@ -183,7 +167,7 @@ struct AppRevealTests {
         SingleInstanceGuard.revealRunningCopy(center: center)
         spinUntil { log.events.count >= 2 }
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
-        #expect(log.events == ["activate", "responder chain"])
+        #expect(log.events == ["activate", "make window", "front"])
     }
 
     @Test("a second launch while onboarding is up brings onboarding forward")
@@ -207,10 +191,10 @@ struct AppRevealTests {
         _ = reveal.handleReopen()
         clock.addTimeInterval(0.1)
         reveal.reveal()
-        #expect(log.events == ["activate", "responder chain"])
+        #expect(log.events == ["activate", "make window", "front"])
         clock.addTimeInterval(AppReveal.coalesceWindow)
         reveal.reveal()
-        #expect(log.events == ["activate", "responder chain", "activate", "responder chain"])
+        #expect(log.events == ["activate", "make window", "front", "activate", "front"])
     }
 
     @Test("the hand-off uses the system-wide notification center")

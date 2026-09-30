@@ -17,6 +17,7 @@ final class FakePopover: PopoverHosting {
     private(set) var anchors: [NSButton] = []
     var willShow: (() -> Void)?
     var willClose: (() -> Void)?
+    private(set) var closeReasons: [PopoverCloseReason] = []
 
     func show(relativeTo button: NSButton) {
         willShow?()
@@ -25,13 +26,14 @@ final class FakePopover: PopoverHosting {
         anchors.append(button)
     }
 
-    func close() {
+    func close(reason: PopoverCloseReason) {
         guard isShown else { return }
+        closeReasons.append(reason)
         willClose?()
         isShown = false
     }
 
-    func dismissFromOutside() { close() }
+    func dismissFromOutside() { close(reason: .outsideClick) }
 
     /// A close that has started but whose animation is still running.
     func beginDismissal() { willClose?() }
@@ -163,7 +165,46 @@ struct MenuBarItemControllerTests {
         rig.menuBar.toggle()
         rig.presenter.show()
         #expect(!rig.popover.isShown)
-        #expect(rig.presenterLog.events.prefix(2) == ["activate", "responder chain"])
+        #expect(rig.popover.closeReasons == [.settings])
+        #expect(rig.presenterLog.events == ["activate", "make window", "front"])
+    }
+
+    @Test("a toggle close is recorded as a toggle")
+    func toggleReason() {
+        let rig = MenuBarRig()
+        rig.menuBar.install()
+        rig.menuBar.toggle()
+        rig.menuBar.toggle()
+        #expect(rig.popover.closeReasons == [.toggle])
+    }
+
+    @Test("a press right after launch, then another after a non-toggle close, each open the popover and keep it open")
+    func pressesAfterNonToggleClose() {
+        let rig = MenuBarRig()
+        rig.menuBar.install()
+        rig.menuBar.toggle()
+        #expect(rig.popover.isShown)
+        // A close that was not a press: Settings.
+        rig.presenter.show()
+        #expect(!rig.popover.isShown)
+        rig.clock.addTimeInterval(1)
+        rig.menuBar.toggle()
+        #expect(rig.popover.isShown)
+        rig.popover.dismissFromOutside()
+        rig.clock.addTimeInterval(1)
+        rig.menuBar.toggle()
+        #expect(rig.popover.isShown)
+        #expect(rig.popover.showCount == 3)
+    }
+
+    @Test("every entry path that opens Settings goes through the one presenter")
+    func settingsEntryPaths() {
+        let rig = MenuBarRig()
+        let reveal = AppReveal(settings: rig.presenter)
+        rig.presenter.show()
+        _ = reveal.handleReopen()
+        #expect(rig.presenterLog.made.count == 1)
+        #expect(rig.presenterLog.fronted.count == 2)
     }
 
     @Test("the button's image and accessibility label are set at install and follow the level")
@@ -279,6 +320,16 @@ struct SystemPopoverTests {
         #expect(!popover.isShown)
     }
 
+    @Test("the reason a close was asked for is recorded, and other closes read as other")
+    func closeReasons() {
+        let popover = SystemPopover(content: NSViewController(), monitors: FakeMonitors())
+        popover.close(reason: .escape)
+        popover.popoverWillClose(Notification(name: NSPopover.willCloseNotification))
+        #expect(popover.lastCloseReason == .escape)
+        popover.popoverWillClose(Notification(name: NSPopover.willCloseNotification))
+        #expect(popover.lastCloseReason == .other)
+    }
+
     @Test("the popover's delegate reports the start of closing and is asked before showing")
     func delegateForwards() {
         let popover = SystemPopover(content: NSViewController(), monitors: FakeMonitors())
@@ -370,7 +421,7 @@ struct PopoverDismissalTests {
     let popoverFrame = NSRect(x: 100, y: 100, width: 300, height: 300)
     let buttonFrame = NSRect(x: 500, y: 900, width: 30, height: 24)
 
-    private func make() -> (PopoverDismissal, FakeMonitors, NotificationCenter, Counter) {
+    private func make(screens: @escaping @MainActor () -> [ScreenSnapshot] = { [] }) -> (PopoverDismissal, FakeMonitors, NotificationCenter, Counter) {
         let monitors = FakeMonitors()
         let center = NotificationCenter()
         let closes = Counter()
@@ -378,12 +429,23 @@ struct PopoverDismissalTests {
         let dismissal = PopoverDismissal(
             monitors: monitors, notifications: center,
             insideFrames: { frames }, popoverWindow: { nil },
-            close: { closes.count += 1 }
+            screens: screens,
+            close: { closes.count += 1; closes.reasons.append($0) }
         )
         return (dismissal, monitors, center, closes)
     }
 
-    final class Counter { var count = 0 }
+    final class Counter {
+        var count = 0
+        var reasons: [PopoverCloseReason] = []
+    }
+
+    final class Screens {
+        var list = [
+            ScreenSnapshot(displayID: 1, frame: NSRect(x: 0, y: 0, width: 1728, height: 1117)),
+            ScreenSnapshot(displayID: 2, frame: NSRect(x: 1728, y: 0, width: 2560, height: 1440)),
+        ]
+    }
 
     @Test("monitors are installed on start and removed once on stop, and none are left")
     func installAndRemove() {
@@ -430,16 +492,65 @@ struct PopoverDismissalTests {
         #expect(closes.count == 1)
     }
 
-    @Test("a change of screen configuration or the app terminating closes it")
-    func screensAndTermination() {
+    @Test("the app terminating closes it, and nothing does once it is stopped")
+    func termination() {
         let (dismissal, _, center, closes) = make()
         dismissal.start()
-        center.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
         center.post(name: NSApplication.willTerminateNotification, object: nil)
-        #expect(closes.count == 2)
+        #expect(closes.reasons == [.terminate])
         dismissal.stop()
+        center.post(name: NSApplication.willTerminateNotification, object: nil)
+        #expect(closes.count == 1)
+    }
+
+    @Test("a screen-parameters notification with the same screens does not close it")
+    func unchangedScreensStayOpen() {
+        let screens = Screens()
+        let (dismissal, _, center, closes) = make(screens: { screens.list })
+        dismissal.start()
+        // Boost engaging, the overlay's EDR headroom settling and the app
+        // activating all post this with nothing moved.
+        for _ in 1...3 { center.post(name: NSApplication.didChangeScreenParametersNotification, object: nil) }
+        #expect(closes.count == 0)
+    }
+
+    @Test("a screen added, removed, moved or resized closes it, once, with that reason")
+    func changedScreensClose() {
+        let changes: [(String, ([ScreenSnapshot]) -> [ScreenSnapshot])] = [
+            ("removed", { Array($0.dropLast()) }),
+            ("added", { $0 + [ScreenSnapshot(displayID: 3, frame: NSRect(x: 4288, y: 0, width: 1920, height: 1080))] }),
+            ("moved", { var l = $0; l[1].frame.origin.x += 100; return l }),
+            ("resized", { var l = $0; l[0].frame.size.width = 1512; return l }),
+            ("swapped", { var l = $0; l[0].displayID = 9; return l }),
+        ]
+        for (name, change) in changes {
+            let screens = Screens()
+            let (dismissal, _, center, closes) = make(screens: { screens.list })
+            dismissal.start()
+            screens.list = change(screens.list)
+            center.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
+            #expect(closes.reasons == [.screenChange], "\(name)")
+        }
+    }
+
+    @Test("the screens are read when it starts, so a change before showing is not a change")
+    func baselineIsTakenAtStart() {
+        let screens = Screens()
+        let (dismissal, _, center, closes) = make(screens: { screens.list })
+        screens.list.removeLast()
+        dismissal.start()
         center.post(name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        #expect(closes.count == 2)
+        #expect(closes.count == 0)
+    }
+
+    @Test("closing for a mouse down and for Esc carry their reasons")
+    func reasons() {
+        let (dismissal, monitors, _, closes) = make()
+        dismissal.start()
+        monitors.mouseDown(at: NSPoint(x: 10, y: 10))
+        monitors.keyDown(code: 53)
+        #expect(closes.reasons.contains(.outsideClick))
+        #expect(closes.reasons.last == .escape)
     }
 
     @Test("the app resigning or deactivating does not close it")

@@ -5,7 +5,7 @@ import SwiftUI
 /// controller and the permissions model with no side effects, so
 /// `BrightBoiApp.body` — read right after `App.init` returns, before
 /// `NSApplication` has finished launching — has something to construct its
-/// Settings scene from immediately. Everything that actually touches the display,
+/// scenes from immediately. Everything that actually touches the display,
 /// the login item list, the key tap, or shows a window waits for
 /// `applicationDidFinishLaunching`, once `NSApp` is the real
 /// `AppKitApplication` SwiftUI expects rather than the plain `NSApplication`
@@ -20,7 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let persistence = RealBrightnessPersistence()
     private let hud = BrightnessHUDController()
     /// Opens Settings in front and key, for every way of asking for it.
-    let settingsPresenter = SettingsPresenter()
+    let settingsPresenter: SettingsPresenter
+    /// Lets the Settings window, built before the app delegate is complete,
+    /// reach the donation window.
+    private let supportOpener = SupportOpener()
     private let reveal: AppReveal
     /// The menu bar item and its popover, created once launch has finished.
     private var menuBarItem: MenuBarItemController?
@@ -52,8 +55,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             displayAccessibility: RealDisplayAccessibility(),
             permissions: permissions
         )
+        let controller = self.controller
+        let updates = self.updates
+        let settingsPresenter = SettingsPresenter(makeWindow: { [supportOpener] in
+            SettingsWindow.make(
+                controller: controller,
+                permissions: permissions,
+                onShowSupport: { supportOpener() },
+                updates: updates
+            )
+        })
+        self.settingsPresenter = settingsPresenter
         self.reveal = AppReveal(settings: settingsPresenter)
         super.init()
+        supportOpener.open = { [weak self] in self?.showDonationWindow() }
         reveal.bringOnboardingForward = { [weak self] in
             guard let onboardingWindow = self?.onboardingWindow else { return false }
             onboardingWindow.bringToFront()
@@ -151,4 +166,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.flushPendingPersist()
         controller.restoreSystemStateOnTermination()
     }
+}
+
+/// A late-bound call to show the donation window. The Settings window is
+/// built before the app delegate is fully initialised, so it cannot capture
+/// the delegate yet; the delegate fills `open` in once it can.
+@MainActor
+final class SupportOpener {
+    var open: () -> Void = {}
+    func callAsFunction() { open() }
 }

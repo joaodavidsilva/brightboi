@@ -18,7 +18,24 @@ protocol PopoverHosting: AnyObject {
     /// Runs as the popover starts to close, however it was closed.
     var willClose: (() -> Void)? { get set }
     func show(relativeTo button: NSButton)
-    func close()
+    /// Closes the popover; `reason` is what the log records.
+    func close(reason: PopoverCloseReason)
+}
+
+/// Why the popover closed, so the log can say what dismissed it.
+enum PopoverCloseReason: String, Sendable {
+    /// A mouse down outside the popover and the status button.
+    case outsideClick
+    case escape
+    /// The status button was pressed while the popover was open.
+    case toggle
+    /// Settings opened in front of it.
+    case settings
+    /// The set of screens, or a screen's frame, really changed.
+    case screenChange
+    case terminate
+    /// Closed by something other than BrightBoi's own code.
+    case other
 }
 
 /// The target of the status button's action. Pressing the button, with the
@@ -74,7 +91,7 @@ final class MenuBarItemController {
         popover.willShow = { [weak self] in self?.prepareToShow() }
         popover.willClose = { [weak self] in self?.popoverWillClose() }
         // Settings opens in front of everything, so the popover makes way.
-        settings.willShow = { [weak self] in self?.closePopover() }
+        settings.willShow = { [weak self] in self?.closePopover(reason: .settings) }
     }
 
     /// Creates the status item, once. Later calls do nothing.
@@ -102,19 +119,20 @@ final class MenuBarItemController {
         if let last = lastDismissal, now().timeIntervalSince(last) < Self.dismissalGrace {
             // The click that dismissed the popover, arriving as its action.
             lastDismissal = nil
+            Log.menuBar.info("Popover press ignored: it is the click that just dismissed the popover")
         } else if popover.isShown {
             closingByToggle = true
-            popover.close()
+            popover.close(reason: .toggle)
         } else {
             popover.show(relativeTo: item.button)
         }
     }
 
     /// Closes the popover if it is open.
-    func closePopover() {
+    func closePopover(reason: PopoverCloseReason) {
         guard popover.isShown else { return }
         closingByToggle = true
-        popover.close()
+        popover.close(reason: reason)
     }
 
     /// Puts the glyph and the spoken label in step with the controller, and
@@ -206,13 +224,34 @@ final class SystemEventMonitors: EventMonitoring {
     }
 }
 
+/// One screen as far as the popover cares: which display it is and where it
+/// sits. Two lists of these are equal exactly when no screen came, went or
+/// moved between them.
+struct ScreenSnapshot: Equatable, Sendable {
+    var displayID: UInt32?
+    var frame: NSRect
+
+    /// The screens right now, in a stable order.
+    @MainActor
+    static func current() -> [ScreenSnapshot] {
+        NSScreen.screens.map { screen in
+            let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+            return ScreenSnapshot(displayID: number?.uint32Value, frame: screen.frame)
+        }
+        .sorted {
+            ($0.displayID ?? 0, $0.frame.origin.x, $0.frame.origin.y)
+                < ($1.displayID ?? 0, $1.frame.origin.x, $1.frame.origin.y)
+        }
+    }
+}
+
 /// Decides when an open popover should close, without relying on the app
 /// being active. A transient popover closes whenever the app resigns, and an
 /// accessory app opened by an assistive client (AXPress) is handed back
 /// activation at once, so the popover would vanish the moment it appeared.
 /// Instead the popover stays open until something explicit closes it: a mouse
-/// down outside it and outside the status button, Esc, the screen
-/// configuration changing, or the app quitting.
+/// down outside it and outside the status button, Esc, the screens really
+/// changing, or the app quitting.
 ///
 /// Monitors and observers exist only between `start()` and `stop()`.
 @MainActor
@@ -221,10 +260,13 @@ final class PopoverDismissal {
     private let notifications: NotificationCenter
     private let insideFrames: () -> [NSRect]
     private let popoverWindow: () -> NSWindow?
-    private let close: () -> Void
+    private let screens: @MainActor () -> [ScreenSnapshot]
+    private let close: (PopoverCloseReason) -> Void
 
     private var tokens: [Any] = []
     private var observers: [NSObjectProtocol] = []
+    /// The screens as they were when the popover showed.
+    private var baselineScreens: [ScreenSnapshot] = []
 
     static let mouseDowns: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
     static let escapeKeyCode: UInt16 = 53
@@ -238,12 +280,14 @@ final class PopoverDismissal {
         notifications: NotificationCenter = .default,
         insideFrames: @escaping () -> [NSRect],
         popoverWindow: @escaping () -> NSWindow?,
-        close: @escaping () -> Void
+        screens: @escaping @MainActor () -> [ScreenSnapshot] = ScreenSnapshot.current,
+        close: @escaping (PopoverCloseReason) -> Void
     ) {
         self.monitors = monitors
         self.notifications = notifications
         self.insideFrames = insideFrames
         self.popoverWindow = popoverWindow
+        self.screens = screens
         self.close = close
     }
 
@@ -251,6 +295,7 @@ final class PopoverDismissal {
 
     func start() {
         guard !isActive else { return }
+        baselineScreens = screens()
         if let token = monitors.addLocal(matching: Self.mouseDowns, handler: { [weak self] event in
             self?.mouseDown(event)
             return event
@@ -262,10 +307,29 @@ final class PopoverDismissal {
             guard let self else { return event }
             return self.keyDown(event)
         }) { tokens.append(token) }
-        for name in [NSApplication.didChangeScreenParametersNotification, NSApplication.willTerminateNotification] {
-            observers.append(notifications.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.close() }
-            })
+        observers.append(notifications.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screenParametersChanged() }
+        })
+        observers.append(notifications.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.close(.terminate) }
+        })
+    }
+
+    /// macOS posts this for more than a real change of screens: activating
+    /// the app, engaging Boost and the overlay's EDR headroom settling all
+    /// post it too. Only a different set of screens or a moved or resized
+    /// screen closes the popover; anything else would close it under the
+    /// user's hand, for example while they drag the slider past 100%.
+    private func screenParametersChanged() {
+        guard isActive else { return }
+        if screens() != baselineScreens {
+            close(.screenChange)
+        } else {
+            Log.menuBar.info("Screen parameters notification ignored: the screens are unchanged")
         }
     }
 
@@ -279,13 +343,13 @@ final class PopoverDismissal {
     private func mouseDown(_ event: NSEvent) {
         let point = event.window?.convertPoint(toScreen: event.locationInWindow) ?? event.locationInWindow
         if insideFrames().contains(where: { $0.contains(point) }) { return }
-        close()
+        close(.outsideClick)
     }
 
     private func keyDown(_ event: NSEvent) -> NSEvent? {
         guard event.keyCode == Self.escapeKeyCode,
               event.window == nil || event.window === popoverWindow() else { return event }
-        close()
+        close(.escape)
         return nil
     }
 }
@@ -299,8 +363,19 @@ final class SystemPopover: NSObject, PopoverHosting, NSPopoverDelegate {
     var willClose: (() -> Void)?
     private var dismissal: PopoverDismissal?
     private weak var anchor: NSButton?
+    /// Why the next close happens, set by whoever asks for it.
+    private var pendingCloseReason: PopoverCloseReason?
+    /// Why the popover last closed, for the log and for tests.
+    private(set) var lastCloseReason: PopoverCloseReason?
+    /// When the popover last began to show, so a close can log how soon it came.
+    private var shownAt: Date?
 
-    init(content: NSViewController, monitors: EventMonitoring = SystemEventMonitors()) {
+    init(
+        content: NSViewController,
+        monitors: EventMonitoring = SystemEventMonitors(),
+        notifications: NotificationCenter = .default,
+        screens: @escaping @MainActor () -> [ScreenSnapshot] = ScreenSnapshot.current
+    ) {
         super.init()
         popover.behavior = .applicationDefined
         popover.animates = true
@@ -308,9 +383,11 @@ final class SystemPopover: NSObject, PopoverHosting, NSPopoverDelegate {
         popover.delegate = self
         dismissal = PopoverDismissal(
             monitors: monitors,
+            notifications: notifications,
             insideFrames: { [weak self] in self?.insideFrames() ?? [] },
             popoverWindow: { [weak self] in self?.popover.contentViewController?.view.window },
-            close: { [weak self] in self?.close() }
+            screens: screens,
+            close: { [weak self] reason in self?.close(reason: reason) }
         )
     }
 
@@ -327,7 +404,8 @@ final class SystemPopover: NSObject, PopoverHosting, NSPopoverDelegate {
         popover.contentViewController?.view.window?.makeKey()
     }
 
-    func close() {
+    func close(reason: PopoverCloseReason) {
+        pendingCloseReason = reason
         popover.close()
     }
 
@@ -343,11 +421,26 @@ final class SystemPopover: NSObject, PopoverHosting, NSPopoverDelegate {
     }
 
     func popoverWillShow(_ notification: Notification) {
+        pendingCloseReason = nil
+        shownAt = Date()
+        Log.menuBar.info("Popover shows, app active: \(NSApp.isActive, privacy: .public)")
         willShow?()
+        // Before the app is activated (right after this), so the screens
+        // compared against are the ones the popover opened on.
         dismissal?.start()
     }
 
     func popoverWillClose(_ notification: Notification) {
+        let reason = pendingCloseReason ?? .other
+        pendingCloseReason = nil
+        lastCloseReason = reason
+        let elapsedMs = shownAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
+        shownAt = nil
+        Log.menuBar.info("""
+            Popover closes, reason: \(reason.rawValue, privacy: .public), \
+            \(elapsedMs, privacy: .public) ms after it showed, \
+            app active: \(NSApp.isActive, privacy: .public)
+            """)
         dismissal?.stop()
         willClose?()
     }
