@@ -14,12 +14,22 @@ struct AdvisoryBanner<Accessory: View>: View {
     var style: Style
     var icon: String
     var text: String
+    /// What VoiceOver reads instead of `text`, for banners that should name
+    /// their kind first, such as "Battery warning: ...".
+    var spokenLabel: String?
     @ViewBuilder var accessory: Accessory
 
-    init(style: Style = .attention, icon: String, text: String, @ViewBuilder accessory: () -> Accessory) {
+    init(
+        style: Style = .attention,
+        icon: String,
+        text: String,
+        spokenLabel: String? = nil,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
         self.style = style
         self.icon = icon
         self.text = text
+        self.spokenLabel = spokenLabel
         self.accessory = accessory()
     }
 
@@ -31,6 +41,7 @@ struct AdvisoryBanner<Accessory: View>: View {
                 // A fixed column, so the text lines up across banners whose
                 // symbols differ in width.
                 .frame(width: 14, alignment: .center)
+                .accessibilityHidden(true)
             Text(text)
                 .font(Theme.Typography.secondary)
                 .foregroundStyle(Color.textRow)
@@ -45,11 +56,14 @@ struct AdvisoryBanner<Accessory: View>: View {
             in: RoundedRectangle(cornerRadius: Theme.Radius.card)
         )
         .contrastBorder(cornerRadius: Theme.Radius.card)
+        // One element: the icon is decoration and the sentence is the banner.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(spokenLabel ?? text)
     }
 }
 
 extension AdvisoryBanner where Accessory == EmptyView {
-    init(style: Style = .attention, icon: String, text: String) {
-        self.init(style: style, icon: icon, text: text) { EmptyView() }
+    init(style: Style = .attention, icon: String, text: String, spokenLabel: String? = nil) {
+        self.init(style: style, icon: icon, text: text, spokenLabel: spokenLabel) { EmptyView() }
     }
 }

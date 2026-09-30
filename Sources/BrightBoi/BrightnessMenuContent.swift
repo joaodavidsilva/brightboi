@@ -57,6 +57,16 @@ struct BrightnessMenuContent: View {
         }
         .padding(EdgeInsets(top: 14, leading: 14, bottom: 8, trailing: 14))
         .frame(width: 280)
+        // A warning that appears while the popover is open is announced once,
+        // when it appears, rather than each time the view is drawn.
+        .onChange(of: controller.batteryAdvisoryVisible) { _, visible in
+            if visible { AccessibilityNotification.Announcement(Self.batteryAdvisorySpokenLabel).post() }
+        }
+        .onChange(of: controller.thermalAdvisory != nil) { _, visible in
+            if visible, let advisory = controller.thermalAdvisory {
+                AccessibilityNotification.Announcement(Self.thermalAdvisorySpokenLabel(advisory)).post()
+            }
+        }
         .onAppear {
             controller.syncFromDisplay()
             controller.permissionsMayHaveChanged()
@@ -140,22 +150,45 @@ struct BrightnessMenuContent: View {
     private func quickSetRow(state: BrightnessController.State) -> some View {
         HStack(spacing: 6) {
             ForEach(Self.quickSetPresets(supportsBoost: state.supportsBoost), id: \.title) { preset in
-                quickSetButton(title: preset.title, isPrimary: preset.isBoost) {
+                quickSetButton(
+                    title: preset.title,
+                    isPrimary: preset.isBoost,
+                    hint: Self.quickSetHint(
+                        preset: preset,
+                        supportsBoost: state.supportsBoost,
+                        boostCeiling: state.boostCeiling
+                    )
+                ) {
                     controller.setPercentage(preset.percentage)
                 }
             }
         }
     }
 
+    /// What a quick-set button will really set: its target, held at the
+    /// level the display can reach (the Boost Ceiling, or 100% without Boost).
+    static func quickSetTarget(preset: QuickSetPreset, supportsBoost: Bool, boostCeiling: Double) -> Double {
+        let reachable = supportsBoost ? boostCeiling : BrightnessController.nominalCeilingPercentage
+        return min(preset.percentage, reachable)
+    }
+
+    static func quickSetHint(preset: QuickSetPreset, supportsBoost: Bool, boostCeiling: Double) -> String {
+        let target = quickSetTarget(preset: preset, supportsBoost: supportsBoost, boostCeiling: boostCeiling)
+        return "Sets brightness to \(Int(target.rounded())) percent"
+    }
+
     private func quickSetButton(
         title: String,
         isPrimary: Bool,
+        hint: String,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Text(title)
                 .font(isPrimary ? Theme.Typography.callout.weight(.semibold) : Theme.Typography.control)
         }
+        .accessibilityHint(hint)
+        .accessibilityInputLabels(Self.quickSetInputLabels(title: title))
         .buttonStyle(PillButtonStyle(
             fill: isPrimary ? .boostFill : .fillGrouped,
             foreground: isPrimary ? .boostText : .textPrimary,
@@ -164,6 +197,12 @@ struct BrightnessMenuContent: View {
             verticalPadding: 6,
             fillsWidth: true
         ))
+    }
+
+    /// What Voice Control accepts for a quick-set button: its visible title,
+    /// plus a plainer name for the top one.
+    static func quickSetInputLabels(title: String) -> [String] {
+        title == "Max boi" ? ["Max boi", "Maximum brightness"] : [title]
     }
 
     /// Whether anything below the quick-set row has something to say. The
@@ -236,14 +275,16 @@ struct BrightnessMenuContent: View {
                     icon: "bolt.slash.fill",
                     // Generic copy, no time-remaining estimate — no battery
                     // consumption model exists to make that number real.
-                    text: "Above \(Int(BrightnessController.batteryAdvisoryThresholdPercentage))% eats battery fast — you're not plugged in."
+                    text: Self.batteryAdvisoryText,
+                    spokenLabel: Self.batteryAdvisorySpokenLabel
                 )
             }
             if let thermalAdvisory = controller.thermalAdvisory {
                 AdvisoryBanner(
                     style: .info,
                     icon: "thermometer.high",
-                    text: "Running hot — delivering closer to \(Int(thermalAdvisory.deliveredPercentage.rounded()))% than the \(Int(thermalAdvisory.requestedPercentage.rounded()))% requested."
+                    text: Self.thermalAdvisoryText(thermalAdvisory),
+                    spokenLabel: Self.thermalAdvisorySpokenLabel(thermalAdvisory)
                 )
             }
             if state.isBoosted && state.builtInDisplayAvailable {
@@ -255,6 +296,20 @@ struct BrightnessMenuContent: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    static var batteryAdvisoryText: String {
+        "Above \(Int(BrightnessController.batteryAdvisoryThresholdPercentage))% eats battery fast — you're not plugged in."
+    }
+
+    static var batteryAdvisorySpokenLabel: String { "Battery warning: " + batteryAdvisoryText }
+
+    static func thermalAdvisoryText(_ advisory: BrightnessController.ThermalAdvisory) -> String {
+        "Running hot — delivering closer to \(Int(advisory.deliveredPercentage.rounded()))% than the \(Int(advisory.requestedPercentage.rounded()))% requested."
+    }
+
+    static func thermalAdvisorySpokenLabel(_ advisory: BrightnessController.ThermalAdvisory) -> String {
+        "Heat warning: " + thermalAdvisoryText(advisory)
     }
 
     /// What to tell the user when Nominal brightness cannot be set, worded
@@ -288,7 +343,7 @@ struct BrightnessMenuContent: View {
             Button {
                 Self.openSettingsWindow { openSettings() }
             } label: {
-                actionRow(title: "Settings…", shortcut: "⌘,")
+                actionRow(title: "Settings…", shortcut: "⌘,", hint: "Command comma")
             }
             .buttonStyle(MenuRowButtonStyle())
             .keyboardShortcut(",", modifiers: .command)
@@ -296,7 +351,7 @@ struct BrightnessMenuContent: View {
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
-                actionRow(title: "Quit BrightBoi", shortcut: "⌘Q")
+                actionRow(title: "Quit BrightBoi", shortcut: "⌘Q", hint: "Command Q")
             }
             .buttonStyle(MenuRowButtonStyle())
             .keyboardShortcut("q", modifiers: .command)
@@ -306,14 +361,18 @@ struct BrightnessMenuContent: View {
         .padding(.top, -6)
     }
 
-    private func actionRow(title: String, shortcut: String) -> some View {
+    private func actionRow(title: String, shortcut: String, hint: String) -> some View {
         HStack {
             Text(title)
             Spacer()
             Text(shortcut)
                 .font(Theme.Typography.secondary)
                 .foregroundStyle(Color.textTertiary)
+                .accessibilityHidden(true)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityHint(hint)
         .font(Theme.Typography.body)
         .foregroundStyle(Color.textRow)
         .padding(.vertical, 6)
@@ -334,6 +393,7 @@ struct PopoverHeader: View {
                 Image(systemName: "sun.max.fill")
                     .font(.system(size: Theme.GlyphSize.header))
                     .foregroundStyle(Color.textPrimary)
+                    .accessibilityHidden(true)
                 Text("BrightBoi")
                     .font(Theme.Typography.body.weight(.semibold))
                     .foregroundStyle(Color.textPrimary)

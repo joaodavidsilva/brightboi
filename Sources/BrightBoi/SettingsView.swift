@@ -72,7 +72,7 @@ struct SettingsView: View {
     // MARK: - General
 
     private func generalSection(state: BrightnessController.State) -> some View {
-        Section("General") {
+        Section {
             toggleRow(
                 title: "Launch at login",
                 isOn: Binding(
@@ -112,7 +112,16 @@ struct SettingsView: View {
             if state.keyRemapShortcut != .defaultShortcut {
                 resetShortcutRow()
             }
+        } header: {
+            sectionHeader("General")
         }
+    }
+
+    /// A section title that VoiceOver lists as a heading.
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityLabel(title)
     }
 
     /// Shown only when the private CoreBrightness symbol couldn't be
@@ -250,7 +259,7 @@ struct SettingsView: View {
             .accessibilityValue("\(Int(state.boostCeiling)) percent, \(Int(state.boostCeilingNits)) nits")
             .accessibilityHint("Highest brightness BrightBoi will let you set")
         } header: {
-            Text("Boost Ceiling")
+            sectionHeader("Boost Ceiling")
         } footer: {
             Text("BrightBoi won't set brightness above this. 200% is the panel's sustained full‑screen rating, the most BrightBoi offers.")
         }
@@ -272,7 +281,7 @@ struct SettingsView: View {
                 }
             }
         } header: {
-            Text("Permissions")
+            sectionHeader("Permissions")
         } footer: {
             // "These", not "both": Input Monitoring is listed only on Macs
             // that need it.
@@ -280,18 +289,37 @@ struct SettingsView: View {
         }
     }
 
+    /// What the status text says to VoiceOver: the permission's name and its
+    /// state in one phrase, such as "Accessibility, Not granted".
+    nonisolated static func permissionStatusLabel(title: String, granted: Bool) -> String {
+        "\(title), \(granted ? "Granted" : "Not granted")"
+    }
+
+    /// Voice Control names for the button that starts a grant: what it says,
+    /// and what it does.
+    nonisolated static func turnOnInputLabels(for title: String) -> [String] {
+        ["Turn on", "Turn on \(title)", "Open System Settings for \(title)"]
+    }
+
     private func permissionRow(title: String, granted: Bool, onGrant: @escaping () -> Void) -> some View {
-        LabeledContent(title) {
+        LabeledContent {
             HStack(spacing: 6) {
                 Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .foregroundStyle(granted ? Color.green : Color.boost)
                     .accessibilityHidden(true)
+                // Carries the row's name too, so the pair is read as one phrase.
                 Text(granted ? "Granted" : "Not granted")
+                    .accessibilityLabel(Self.permissionStatusLabel(title: title, granted: granted))
                 if !granted {
                     Button("Turn on…", action: onGrant)
                         .controlSize(.small)
+                        .accessibilityLabel("Turn on \(title)")
+                        .accessibilityInputLabels(Self.turnOnInputLabels(for: title))
                 }
             }
+        } label: {
+            Text(title)
+                .accessibilityHidden(true)
         }
     }
 
@@ -309,14 +337,16 @@ struct SettingsView: View {
     }
 
     private func footer() -> some View {
-        HStack {
+        VStack(alignment: .leading, spacing: 10) {
             Text(Self.versionLabel(info: Bundle.main.infoDictionary))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            Spacer()
-            Button("Support BrightBoi…", action: onShowSupport)
-            Button("Quit BrightBoi") {
-                NSApplication.shared.terminate(nil)
+            HStack {
+                Button("Support BrightBoi…", action: onShowSupport)
+                Spacer()
+                Button("Quit BrightBoi") {
+                    NSApplication.shared.terminate(nil)
+                }
             }
         }
         .padding(EdgeInsets(top: 4, leading: 20, bottom: 16, trailing: 20))

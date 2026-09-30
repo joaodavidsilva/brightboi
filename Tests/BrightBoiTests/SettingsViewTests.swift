@@ -71,4 +71,12 @@ struct SettingsViewTests {
                 == "BrightBoi 1.1.0 (3) · built-in display only"
         )
     }
+
+    @Test("a permission row is spoken as its name and state, with Voice Control names for its button")
+    func permissionRowAccessibility() {
+        #expect(SettingsView.permissionStatusLabel(title: "Accessibility", granted: false) == "Accessibility, Not granted")
+        #expect(SettingsView.permissionStatusLabel(title: "Input Monitoring", granted: true) == "Input Monitoring, Granted")
+        #expect(SettingsView.turnOnInputLabels(for: "Accessibility")
+            == ["Turn on", "Turn on Accessibility", "Open System Settings for Accessibility"])
+    }
 }

@@ -127,6 +127,31 @@ struct PopoverTests {
         #expect(BoostSlider.accessibilityValue(percentage: 120, reachableMaximum: 200, boostCeiling: 200) == "120 percent, boosted")
     }
 
+    @Test func quickSetHintsNameTheClampedTarget() {
+        let presets = BrightnessMenuContent.quickSetPresets(supportsBoost: true)
+        let hints = presets.map { BrightnessMenuContent.quickSetHint(preset: $0, supportsBoost: true, boostCeiling: 150) }
+        #expect(hints == ["Sets brightness to 40 percent", "Sets brightness to 100 percent", "Sets brightness to 150 percent"])
+
+        let full = BrightnessMenuContent.quickSetHint(preset: presets[2], supportsBoost: true, boostCeiling: 200)
+        #expect(full == "Sets brightness to 200 percent")
+
+        let plain = BrightnessMenuContent.quickSetPresets(supportsBoost: false)
+        #expect(plain.map { BrightnessMenuContent.quickSetHint(preset: $0, supportsBoost: false, boostCeiling: 200) }
+            == ["Sets brightness to 40 percent", "Sets brightness to 100 percent"])
+    }
+
+    @Test func maxBoiAcceptsAPlainerSpokenName() {
+        #expect(BrightnessMenuContent.quickSetInputLabels(title: "Max boi") == ["Max boi", "Maximum brightness"])
+        #expect(BrightnessMenuContent.quickSetInputLabels(title: "Dim") == ["Dim"])
+    }
+
+    @Test func warningBannersNameTheirKindFirst() {
+        #expect(BrightnessMenuContent.batteryAdvisorySpokenLabel.hasPrefix("Battery warning: Above"))
+        let advisory = BrightnessController.ThermalAdvisory(requestedPercentage: 190, deliveredPercentage: 150)
+        #expect(BrightnessMenuContent.thermalAdvisorySpokenLabel(advisory)
+            == "Heat warning: Running hot — delivering closer to 150% than the 190% requested.")
+    }
+
     // MARK: Controls and rows
 
     @Test func controlsAreDisabledOnlyWhileTheDisplayIsOff() {
