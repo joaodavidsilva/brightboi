@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hud = BrightnessHUDController()
     private var onboardingWindow: OnboardingWindowController?
     private var donationWindow: DonationWindowController?
+    /// The clock and the time since the Mac started, for the donation prompt.
+    /// Seams so the launch decision can be driven without real time.
+    var now: () -> Date = { Date() }
+    var systemUptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
 
     override init() {
         let permissions = PermissionsModel(checker: RealPermissionsChecker())
@@ -76,12 +80,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.onboardingWindow?.bringToFront()
         }
 
-        donationWindow = DonationWindowController(onClose: { [weak self] in
-            self?.donationWindow = nil
-        })
-        donationWindow?.show()
+        let onboardingShowing = OnboardingModel.shouldShow(persistence: persistence)
+        if DonationPromptPolicy.prepareLaunchPrompt(
+            persistence: persistence,
+            now: now(),
+            systemUptime: systemUptime(),
+            onboardingShowing: onboardingShowing
+        ) {
+            showDonationWindow()
+        }
 
-        if OnboardingModel.shouldShow(persistence: persistence) {
+        if onboardingShowing {
             let model = OnboardingModel(persistence: persistence, permissions: permissions)
             let window = OnboardingWindowController(model: model, onClose: { [weak self] in
                 self?.onboardingWindow = nil
@@ -93,6 +102,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onboardingWindow = window
             window.show()
         }
+    }
+
+    /// Shows the donation window, creating it if needed. Used by the
+    /// throttled launch prompt and by Settings' "Support BrightBoi…", which
+    /// ignores the throttle and records nothing. The window never takes focus.
+    func showDonationWindow() {
+        if donationWindow == nil {
+            donationWindow = DonationWindowController(onClose: { [weak self] in
+                self?.donationWindow = nil
+            })
+        }
+        donationWindow?.show()
     }
 
     /// Launching BrightBoi again (Finder, Spotlight, `open`) is the way back in

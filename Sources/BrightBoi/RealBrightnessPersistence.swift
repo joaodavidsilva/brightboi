@@ -19,6 +19,8 @@ final class RealBrightnessPersistence: BrightnessPersisting {
     private static let keyRemapShortcutUnreadableBackupKey = "com.ptlghost.BrightBoi.keyRemapShortcut.unreadable"
     private static let keyRemapEnabledKey = "com.ptlghost.BrightBoi.keyRemapEnabled"
     private static let hasCompletedOnboardingKey = "com.ptlghost.BrightBoi.hasCompletedOnboarding"
+    private static let firstLaunchDateKey = "com.ptlghost.BrightBoi.firstLaunchDate"
+    private static let lastDonationPromptDateKey = "com.ptlghost.BrightBoi.lastDonationPromptDate"
     private static let autoBrightnessWasEnabledOriginallyKey = "com.ptlghost.BrightBoi.autoBrightnessWasEnabledOriginally"
     private static let autoBrightnessTakeoverEnabledKey = "com.ptlghost.BrightBoi.autoBrightnessTakeoverEnabled"
 
@@ -126,6 +128,25 @@ final class RealBrightnessPersistence: BrightnessPersisting {
     /// the same "never persisted yet" convention every other flag here uses.
     func loadHasCompletedOnboarding() -> Bool? {
         defaults.object(forKey: Self.hasCompletedOnboardingKey) as? Bool
+    }
+
+    func save(firstLaunchDate: Date) {
+        defaults.set(firstLaunchDate, forKey: Self.firstLaunchDateKey)
+    }
+
+    /// `nil` until the first launch records it, or for a wrong-typed value.
+    func loadFirstLaunchDate() -> Date? {
+        defaults.object(forKey: Self.firstLaunchDateKey) as? Date
+    }
+
+    func save(lastDonationPromptDate: Date) {
+        defaults.set(lastDonationPromptDate, forKey: Self.lastDonationPromptDateKey)
+    }
+
+    /// `nil` when the window has never appeared by itself, or for a
+    /// wrong-typed value.
+    func loadLastDonationPromptDate() -> Date? {
+        defaults.object(forKey: Self.lastDonationPromptDateKey) as? Date
     }
 
     func save(autoBrightnessWasEnabledOriginally: Bool) {

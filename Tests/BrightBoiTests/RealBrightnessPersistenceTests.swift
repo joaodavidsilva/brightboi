@@ -163,4 +163,34 @@ struct RealBrightnessPersistenceTests {
 
         #expect(defaults.data(forKey: "com.ptlghost.BrightBoi.keyRemapShortcut.unreadable") == originalBytes)
     }
+
+    // MARK: Donation prompt dates
+
+    @Test("the first-launch and last-prompt dates round-trip, and are nil when never saved")
+    func donationDatesRoundTrip() {
+        let (name, defaults) = makeSuite()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let persistence = RealBrightnessPersistence(defaults: defaults)
+        #expect(persistence.loadFirstLaunchDate() == nil)
+        #expect(persistence.loadLastDonationPromptDate() == nil)
+
+        let first = Date(timeIntervalSince1970: 1_700_000_000)
+        let last = Date(timeIntervalSince1970: 1_710_000_000)
+        persistence.save(firstLaunchDate: first)
+        persistence.save(lastDonationPromptDate: last)
+
+        #expect(persistence.loadFirstLaunchDate() == first)
+        #expect(persistence.loadLastDonationPromptDate() == last)
+    }
+
+    @Test("a wrong-typed stored donation date returns nil")
+    func wrongTypedDonationDatesReturnNil() {
+        let (name, defaults) = makeSuite()
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set("yesterday", forKey: "com.ptlghost.BrightBoi.firstLaunchDate")
+        defaults.set(42, forKey: "com.ptlghost.BrightBoi.lastDonationPromptDate")
+        let persistence = RealBrightnessPersistence(defaults: defaults)
+        #expect(persistence.loadFirstLaunchDate() == nil)
+        #expect(persistence.loadLastDonationPromptDate() == nil)
+    }
 }

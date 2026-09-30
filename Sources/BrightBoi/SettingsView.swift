@@ -4,18 +4,26 @@ import SwiftUI
 
 /// BrightBoi's Settings window: a native grouped `Form` with General (launch
 /// at login, auto-brightness takeover, Key Remap and its shortcuts), Boost
-/// Ceiling and Permissions sections, then a footer with the version and Quit.
+/// Ceiling and Permissions sections, then a footer with the version, Support BrightBoi and Quit.
 /// Rows use the system's own styles, so the window follows the platform's
 /// look in both appearances.
 struct SettingsView: View {
     var controller: BrightnessController
     var permissions: PermissionsModel
+    /// Opens the donation window. It ignores the launch-time throttle.
+    var onShowSupport: () -> Void = {}
 
     @State private var recorder: ShortcutRecorder
 
-    init(controller: BrightnessController, permissions: PermissionsModel, recorder: ShortcutRecorder? = nil) {
+    init(
+        controller: BrightnessController,
+        permissions: PermissionsModel,
+        recorder: ShortcutRecorder? = nil,
+        onShowSupport: @escaping () -> Void = {}
+    ) {
         self.controller = controller
         self.permissions = permissions
+        self.onShowSupport = onShowSupport
         _recorder = State(initialValue: recorder ?? ShortcutRecorder(controller: controller))
     }
 
@@ -306,6 +314,7 @@ struct SettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Spacer()
+            Button("Support BrightBoi…", action: onShowSupport)
             Button("Quit BrightBoi") {
                 NSApplication.shared.terminate(nil)
             }

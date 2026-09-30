@@ -17,7 +17,11 @@ struct BrightBoiApp: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(controller: appDelegate.controller, permissions: appDelegate.permissions)
+            SettingsView(
+                controller: appDelegate.controller,
+                permissions: appDelegate.permissions,
+                onShowSupport: { appDelegate.showDonationWindow() }
+            )
         }
     }
 }

@@ -128,6 +128,8 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
     var storedKeyRemapEnabled: Bool?
     var storedHasCompletedOnboarding: Bool?
     private(set) var saveHasCompletedOnboardingCallCount = 0
+    var storedFirstLaunchDate: Date?
+    var storedLastDonationPromptDate: Date?
     var storedLastRegisteredLoginItemPath: String?
     var storedAutoBrightnessWasEnabledOriginally: Bool?
     var storedAutoBrightnessTakeoverEnabled: Bool?
@@ -182,6 +184,22 @@ final class FakeBrightnessPersistence: BrightnessPersisting {
 
     func loadKeyRemapEnabled() -> Bool? {
         storedKeyRemapEnabled
+    }
+
+    func save(firstLaunchDate: Date) {
+        storedFirstLaunchDate = firstLaunchDate
+    }
+
+    func loadFirstLaunchDate() -> Date? {
+        storedFirstLaunchDate
+    }
+
+    func save(lastDonationPromptDate: Date) {
+        storedLastDonationPromptDate = lastDonationPromptDate
+    }
+
+    func loadLastDonationPromptDate() -> Date? {
+        storedLastDonationPromptDate
     }
 
     func save(hasCompletedOnboarding: Bool) {

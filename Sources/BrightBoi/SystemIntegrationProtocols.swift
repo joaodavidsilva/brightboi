@@ -188,6 +188,16 @@ protocol BrightnessPersisting {
     func save(hasCompletedOnboarding: Bool)
     func loadHasCompletedOnboarding() -> Bool?
 
+    /// When BrightBoi first ran, `nil` until the first launch that records
+    /// it. The donation prompt counts its first week from here.
+    func save(firstLaunchDate: Date)
+    func loadFirstLaunchDate() -> Date?
+
+    /// When the donation window last appeared by itself, `nil` if it never
+    /// has. Opening it from Settings does not write this.
+    func save(lastDonationPromptDate: Date)
+    func loadLastDonationPromptDate() -> Date?
+
     /// Whether macOS's own auto-brightness was on right before BrightBoi's
     /// takeover disabled it — recorded once per continuous run (see
     /// `loadAutoBrightnessWasEnabledOriginally`), so quitting can put it back
