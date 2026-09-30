@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: macOS ${{ matrix.os }}, Xcode ${{ matrix.xcode }}
+    runs-on: macos-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest hosted macOS runner still offered (macos-14 is
+          # deprecated) with the oldest Xcode that builds Swift 6 packages,
+          # and the newest runner with its latest stable Xcode.
+          - os: "15"
+            xcode: "16.4"
+          - os: "26"
+            xcode: latest-stable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ matrix.xcode }}
+
+      - name: Build
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test
+
+      - name: Lint Info.plist
+        run: plutil -lint Packaging/Info.plist
+
+      - name: Build the app bundle
+        run: CODESIGN_IDENTITY=- ALLOW_ADHOC_RELEASE=1 bash Packaging/build-app.sh release
+
+      - name: Verify the bundle signature
+        run: codesign --verify --strict .build/BrightBoi.app
+
+      - name: Check private symbols
+        run: swift Packaging/check-private-symbols.swift
+
+      - name: Install shellcheck
+        run: command -v shellcheck >/dev/null || brew install shellcheck
+
+      - name: Lint shell scripts
+        run: shellcheck Packaging/*.sh
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Packaging/Info.plist)"
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match CFBundleShortVersionString ${version}" >&2
+            exit 1
+          fi

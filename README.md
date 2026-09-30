@@ -135,6 +135,10 @@ refuses to fall back to ad-hoc signing, which would make macOS forget permission
 every build. Without a certificate, set `ALLOW_ADHOC_RELEASE=1` to build an ad-hoc signed
 release bundle for local use only.
 
+CI builds and tests every push on macOS 15 (Xcode 16.4) and the newest hosted macOS with its
+latest stable Xcode. macOS 14 is the minimum the app supports but is not covered by CI,
+because GitHub has deprecated its macOS 14 runners.
+
 ## Support
 
 If you find BrightBoi useful:
