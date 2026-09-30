@@ -54,28 +54,33 @@ struct OnboardingModelTests {
 
         fixture.model.advance()
         #expect(fixture.model.step == .confirmation)
-        #expect(fixture.persistence.storedHasCompletedOnboarding == nil)
+        #expect(fixture.persistence.storedHasCompletedOnboarding == true)
     }
 
-    @Test("advancing past confirmation persists completion and fires onFinished")
+    @Test("reaching the confirmation persists completion; the last button fires onFinished once")
     func completingAllThreeStepsPersists() {
         let fixture = makeFixture()
-        var finished = false
-        fixture.model.onFinished = { finished = true }
+        var finishedCount = 0
+        fixture.model.onFinished = { finishedCount += 1 }
 
         fixture.model.advance()
+        fixture.model.advance()
+        #expect(fixture.model.step == .confirmation)
+        #expect(fixture.persistence.storedHasCompletedOnboarding == true)
+        #expect(finishedCount == 0)
+
         fixture.model.advance()
         fixture.model.advance()
 
         #expect(fixture.model.step == .confirmation)
-        #expect(fixture.persistence.storedHasCompletedOnboarding == true)
-        #expect(finished == true)
+        #expect(finishedCount == 1)
+        #expect(fixture.persistence.saveHasCompletedOnboardingCallCount == 1)
     }
 
     // MARK: Skip
 
-    @Test("skipping from the permissions step persists completion and fires onFinished")
-    func skippingPersists() {
+    @Test("skipping goes to the confirmation, persists completion and does not finish")
+    func skippingGoesToConfirmation() {
         let fixture = makeFixture()
         var finished = false
         fixture.model.onFinished = { finished = true }
@@ -83,21 +88,77 @@ struct OnboardingModelTests {
         fixture.model.advance()
         fixture.model.skip()
 
+        #expect(fixture.model.step == .confirmation)
         #expect(fixture.persistence.storedHasCompletedOnboarding == true)
+        #expect(finished == false)
+
+        fixture.model.advance()
         #expect(finished == true)
     }
 
-    @Test("skipping never re-fires onFinished or re-saves on a later call")
+    @Test("skipping only applies on the permissions step")
+    func skipOutsidePermissionsIsIgnored() {
+        let fixture = makeFixture()
+        fixture.model.skip()
+        #expect(fixture.model.step == .welcome)
+        #expect(fixture.persistence.storedHasCompletedOnboarding == nil)
+    }
+
+    @Test("repeated skips and finishing never re-fire onFinished or re-save")
     func finishingIsIdempotent() {
         let fixture = makeFixture()
         var finishedCount = 0
         fixture.model.onFinished = { finishedCount += 1 }
 
+        fixture.model.advance()
         fixture.model.skip()
         fixture.model.skip()
+        fixture.model.advance()
+        fixture.model.advance()
 
         #expect(finishedCount == 1)
         #expect(fixture.persistence.saveHasCompletedOnboardingCallCount == 1)
+    }
+
+    // MARK: Closing the window
+
+    @Test("closing the window on any step persists completion without calling onFinished")
+    func dismissedByClosePersists() {
+        for advances in 0...2 {
+            let fixture = makeFixture()
+            var finished = false
+            fixture.model.onFinished = { finished = true }
+            for _ in 0..<advances { fixture.model.advance() }
+
+            fixture.model.dismissedByClose()
+
+            #expect(fixture.persistence.storedHasCompletedOnboarding == true)
+            #expect(finished == false)
+            #expect(OnboardingModel.shouldShow(persistence: fixture.persistence) == false)
+        }
+    }
+
+    @Test("closing after a skip or after finishing does not save or finish again")
+    func dismissedByCloseIsIdempotent() {
+        let fixture = makeFixture()
+        var finishedCount = 0
+        fixture.model.onFinished = { finishedCount += 1 }
+
+        fixture.model.advance()
+        fixture.model.skip()
+        fixture.model.dismissedByClose()
+        fixture.model.dismissedByClose()
+        #expect(fixture.persistence.saveHasCompletedOnboardingCallCount == 1)
+
+        // The window closing after "Get bright" reports the close as well.
+        let other = makeFixture()
+        other.model.onFinished = { finishedCount += 1 }
+        other.model.advance()
+        other.model.advance()
+        other.model.advance()
+        other.model.dismissedByClose()
+        #expect(finishedCount == 1)
+        #expect(other.persistence.saveHasCompletedOnboardingCallCount == 1)
     }
 
     // MARK: Permission requests

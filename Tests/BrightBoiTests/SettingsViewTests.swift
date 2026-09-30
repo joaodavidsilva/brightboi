@@ -44,11 +44,11 @@ struct SettingsViewTests {
 
     // MARK: - Key Remap title
 
-    @Test("the title lists lower then raise, and reads F1 / F2 for the default")
+    @Test("the title lists lower then raise, and reads F1/F2 for the default")
     func remapTitleOrder() {
-        #expect(SettingsView.remapToggleTitle(.defaultShortcut) == "Let BrightBoi own F1 / F2")
+        #expect(SettingsView.remapToggleTitle(.defaultShortcut) == "Let BrightBoi own F1/F2")
         let title = SettingsView.remapToggleTitle(custom)
-        #expect(title == "Let BrightBoi own \(custom.lower.displayString) / \(custom.raise.displayString)")
+        #expect(title == "Let BrightBoi own \(custom.lower.displayString)/\(custom.raise.displayString)")
     }
 
     // MARK: - Version

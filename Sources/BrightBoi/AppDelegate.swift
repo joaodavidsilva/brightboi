@@ -92,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if onboardingShowing {
             let model = OnboardingModel(persistence: persistence, permissions: permissions)
-            let window = OnboardingWindowController(model: model, onClose: { [weak self] in
+            let window = OnboardingWindowController(model: model, controller: controller, onClose: { [weak self] in
                 self?.onboardingWindow = nil
                 NSApp.setActivationPolicy(.accessory)
                 // Whichever way onboarding ended, re-read the permissions so

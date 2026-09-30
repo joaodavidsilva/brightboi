@@ -3,7 +3,7 @@ import Observation
 import SwiftUI
 
 /// Whether the donation window is currently key, read by `DonationView` to
-/// decide whether its "or just press ⎋" hint would actually be true. The
+/// decide whether its "or press Esc" hint would actually be true. The
 /// window never calls `NSApp.activate`, so it starts non-key and only
 /// becomes key if the user clicks into it.
 @Observable
@@ -24,11 +24,11 @@ private final class ClickThroughActivationHostingView<Content: View>: NSHostingV
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// Owns the donation window. Shown unconditionally on every launch, from
-/// `AppDelegate.applicationDidFinishLaunching`, after
-/// `BrightnessController.start()` has already applied the restored
-/// brightness and started the key remap, so this window is non-blocking by
-/// construction rather than by any runtime check here.
+/// Owns the donation window. `AppDelegate` shows it from the throttled
+/// launch prompt, after `BrightnessController.start()` has already applied
+/// the restored brightness and started the key remap, and on request from
+/// Settings, so this window is non-blocking by construction rather than by
+/// any runtime check here.
 ///
 /// Deliberately never takes focus: `show()` only orders the window front —
 /// never `NSApp.activate` or `makeKeyAndOrderFront` — so whatever app the
@@ -55,18 +55,20 @@ final class DonationWindowController: NSObject, NSWindowDelegate {
         self.onClose = onClose
 
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: DonationView.contentSize),
+            contentRect: NSRect(x: 0, y: 0, width: DonationView.contentWidth, height: 300),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        window.title = "Support BrightBoi"
         window.titleVisibility = .hidden
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        window.center()
 
         // Captures `window` weakly: `window` -> contentView -> hostingView
         // -> rootView holds this closure, so a strong capture would retain
@@ -77,8 +79,11 @@ final class DonationWindowController: NSObject, NSWindowDelegate {
                 window?.close()
             }
         ))
-        hostingView.frame = NSRect(origin: .zero, size: DonationView.contentSize)
+        // The window is as tall as its content, so there is no dead space
+        // however the text wraps.
         window.contentView = hostingView
+        window.setContentSize(hostingView.fittingSize)
+        window.center()
 
         self.window = window
         super.init()

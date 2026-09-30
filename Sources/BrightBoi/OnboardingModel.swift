@@ -2,9 +2,10 @@ import Observation
 
 /// Drives the first-run onboarding flow: welcome, permission request,
 /// confirmation, shown at most once, ever. The persisted
-/// `hasCompletedOnboarding` flag is set on completing all three steps *or*
-/// skipping from the permissions step, so it is never shown again after the
-/// very first run, whichever path was taken.
+/// `hasCompletedOnboarding` flag is set as soon as the confirmation step is
+/// reached (by continuing or by skipping the permission) and when the window
+/// is closed on any step, so onboarding never comes back at a later launch,
+/// however it was left, including by quitting on the last step.
 @Observable
 @MainActor
 final class OnboardingModel {
@@ -33,6 +34,8 @@ final class OnboardingModel {
     /// non-UI-facing properties.
     @ObservationIgnored
     private var hasFinished = false
+    @ObservationIgnored
+    private var hasPersisted = false
 
     init(persistence: BrightnessPersisting, permissions: PermissionsModel) {
         self.persistence = persistence
@@ -40,7 +43,7 @@ final class OnboardingModel {
     }
 
     /// `false` once `hasCompletedOnboarding` has been persisted by any path
-    /// (completion or skip) — `nil` (fresh install) counts as "should show".
+    /// (any path) — `nil` (fresh install) counts as "should show".
     static func shouldShow(persistence: BrightnessPersisting) -> Bool {
         persistence.loadHasCompletedOnboarding() != true
     }
@@ -51,16 +54,26 @@ final class OnboardingModel {
     func advance() {
         switch step {
         case .welcome: step = .permissions
-        case .permissions: step = .confirmation
+        case .permissions: showConfirmation()
         case .confirmation: complete()
         }
     }
 
-    /// The permissions step's escape hatch — ends onboarding immediately
+    /// The permissions step's escape hatch: goes on to the confirmation
     /// without requesting anything further, so the slider stays usable
-    /// without any permission.
+    /// without any permission. The confirmation's own button ends onboarding.
     func skip() {
-        complete()
+        guard step == .permissions else { return }
+        showConfirmation()
+    }
+
+    /// The window was closed with its own close button, on any step. Records
+    /// that onboarding has been seen, but does not call `onFinished`: the
+    /// window is already closing, and closing it again from inside that
+    /// would recurse.
+    func dismissedByClose() {
+        persistCompletion()
+        hasFinished = true
     }
 
     /// The Grant button: shows macOS's prompt the first time, and opens the
@@ -76,10 +89,21 @@ final class OnboardingModel {
         permissions.refresh()
     }
 
+    private func showConfirmation() {
+        step = .confirmation
+        persistCompletion()
+    }
+
+    private func persistCompletion() {
+        guard !hasPersisted else { return }
+        hasPersisted = true
+        persistence.save(hasCompletedOnboarding: true)
+    }
+
     private func complete() {
         guard !hasFinished else { return }
         hasFinished = true
-        persistence.save(hasCompletedOnboarding: true)
+        persistCompletion()
         onFinished()
     }
 }

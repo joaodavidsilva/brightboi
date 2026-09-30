@@ -5,17 +5,19 @@ import SwiftUI
 /// 1/3/5-coffee preset buttons — Buy Me a Coffee has no URL parameter to
 /// pre-fill an amount and the account has no fixed minimum. Hosted in
 /// `DonationWindowController`'s `NSWindow`, which never takes keyboard focus
-/// on its own; this view only renders content, calls back into `onDismiss`
-/// for both the "Not today" tap and Esc, and shows the Esc hint only once
-/// `keyState` says Esc would actually reach the window.
+/// on its own; this view only renders content, and calls back into
+/// `onDismiss` for the "Not today" tap, for Esc, and once the support page
+/// has opened. It shows the Esc hint only once `keyState` says Esc would
+/// actually reach the window.
 struct DonationView: View {
     var keyState: DonationWindowKeyState
     var onDismiss: () -> Void
-    /// Opens the support page. Injectable so nothing that renders or clicks
-    /// this view in a test can reach the browser.
-    var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// Opens the support page and reports whether it opened. Injectable so
+    /// nothing that renders or clicks this view in a test can reach the
+    /// browser.
+    var openURL: (URL) -> Bool = { NSWorkspace.shared.open($0) }
 
-    static let contentSize = CGSize(width: 380, height: 300)
+    static let contentWidth: CGFloat = 380
 
     /// Buy Me a Coffee's brand yellow and the dark text on it. They are the
     /// brand's own colours, so they are the same in both appearances and stay
@@ -31,12 +33,14 @@ struct DonationView: View {
                 Image(systemName: "sun.max.fill")
                     .font(.system(size: Theme.GlyphSize.donation))
                     .foregroundStyle(Color.sunGlyph)
+                    .accessibilityHidden(true)
                 Text("Free app. Expensive boi.")
                     .font(Theme.Typography.title)
                     .foregroundStyle(Color.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
             }
 
-            Text("You're pulling 1000 nits out of hardware you already own. If that made an afternoon outside bearable, buy me a coffee — entirely up to you. BrightBoi already started; it's up in the menu bar.")
+            Text("BrightBoi is free and stays free. If it's earned its spot in your menu bar, you can buy the developer a coffee — entirely up to you.")
                 .font(Theme.Typography.body)
                 .foregroundStyle(Color.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -62,7 +66,7 @@ struct DonationView: View {
                         .keyboardShortcut(.cancelAction)
 
                     if keyState.isKey {
-                        Text("or just press ⎋")
+                        Text("or press Esc")
                             .font(Theme.Typography.secondary)
                             .foregroundStyle(Color.textTertiary)
                     }
@@ -78,13 +82,15 @@ struct DonationView: View {
                 .foregroundStyle(Color.textTertiary)
         }
         .padding(.horizontal, 24)
-        .padding(.top, 22)
+        .padding(.top, 36)
         .padding(.bottom, 20)
-        .frame(width: Self.contentSize.width)
+        .frame(width: Self.contentWidth)
         .background(Color.surfaceWindow)
     }
 
+    /// Closes the window once the page has opened, so it is not left over
+    /// behind the browser. A failed open leaves it up to try again.
     private func openSupportPage() {
-        openURL(Self.supportURL)
+        if openURL(Self.supportURL) { onDismiss() }
     }
 }

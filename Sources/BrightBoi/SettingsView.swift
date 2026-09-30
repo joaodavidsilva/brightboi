@@ -201,7 +201,7 @@ struct SettingsView: View {
     }
 
     nonisolated static func remapToggleTitle(_ shortcut: KeyRemapShortcut) -> String {
-        "Let BrightBoi own \(shortcut.lower.displayString) / \(shortcut.raise.displayString)"
+        "Let BrightBoi own \(shortcut.lower.displayString)/\(shortcut.raise.displayString)"
     }
 
     /// The Key Remap explanation, worded for what the keys will really do:
@@ -346,11 +346,11 @@ struct SettingsView: View {
     }
 
     /// Shown only while the shortcut differs from the default, so there is
-    /// always a way back to F1 / F2.
+    /// always a way back to F1/F2.
     private func resetShortcutRow() -> some View {
         HStack {
             Spacer()
-            Button("Reset to F1 / F2") {
+            Button("Reset to F1/F2") {
                 controller.resetKeyRemapShortcut()
             }
             .controlSize(.small)

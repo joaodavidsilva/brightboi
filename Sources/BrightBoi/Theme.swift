@@ -137,8 +137,10 @@ enum Theme {
     static let sliderNominal = ThemeValues(light: Shade(hex: 0x3A3A3C), dark: .white())
     static let sliderKnob = ThemeValues(.white())
     static let sliderKnobShadow = ThemeValues(light: .black(0.28), dark: .black(0.5))
-    static let pageDotActive = ThemeValues(light: .black(0.6), dark: .white(0.85))
-    static let pageDotInactive = ThemeValues(light: .black(0.16), dark: .white(0.22), lightIncreased: .black(0.35), darkIncreased: .white(0.4))
+    /// Onboarding's page dots. The inactive dot is a state indicator, so it
+    /// keeps 3:1 against the window in every look.
+    static let pageDotActive = ThemeValues(light: .black(0.85), dark: .white(0.95), lightIncreased: .black(), darkIncreased: .white())
+    static let pageDotInactive = ThemeValues(light: .black(0.45), dark: .white(0.35), lightIncreased: .black(0.6), darkIncreased: .white(0.55))
 
     // Boost amber
     /// Fills, tints, glyphs and the slider tint.

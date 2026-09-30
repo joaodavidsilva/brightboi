@@ -110,6 +110,18 @@ struct ThemeTests {
         assertHex(resolved(Theme.hudBoost, .dark), 0xFF9F0A)
     }
 
+    /// The inactive page dot is the only sign of which step is current, so it
+    /// needs 3:1 against the onboarding background, and the active dot must
+    /// stand clearly apart from it.
+    @Test(arguments: Look.allCases)
+    private func pageDotsAreLegible(look: Look) {
+        let background = surface(look)
+        let inactive = composite(resolved(Theme.pageDotInactive, look), over: background)
+        let active = composite(resolved(Theme.pageDotActive, look), over: background)
+        #expect(contrast(inactive, on: background) >= 3, "inactive dot, \(look)")
+        #expect(contrast(active, on: inactive) >= 1.5, "active vs inactive dot, \(look)")
+    }
+
     @Test func statusAndAccentValues() {
         assertHex(resolved(Theme.accentButton, .light), 0x0071E3)
         assertHex(resolved(Theme.accentButton, .dark), 0x0071E3)

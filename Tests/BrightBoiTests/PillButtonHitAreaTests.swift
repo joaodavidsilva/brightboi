@@ -153,17 +153,14 @@ struct PillButtonHitAreaTests {
         let width = OnboardingView.contentSize.width
         func rebuild() { (harness, model, persistence, _) = onboardingPermissions() }
 
-        // Down the left padding, a column well clear of the words. Continue
-        // shares the column: a click on it moves to the next step, which is
-        // not a Skip, so the window is rebuilt and the click ignored.
-        let column = NSRect(x: 34, y: 0, width: 0, height: harness.bounds.height)
+        // Down the left padding, a column well clear of the words, over the
+        // Skip row only: the main button above it also moves on to the
+        // confirmation, so the sweep stays below it.
+        let column = NSRect(x: 34, y: 36, width: 0, height: 44)
         let box = try #require(hitBounds(
             in: column, step: 3,
             click: { harness.click(at: $0) },
-            didFire: {
-                if model.step != .permissions { rebuild(); return false }
-                return persistence.saveHasCompletedOnboardingCallCount > 0
-            },
+            didFire: { model.step == .confirmation },
             rebuild: rebuild
         ))
         #expect(box.height >= 24, "the pill is well over the label's 15pt, at least 24pt tall, got \(box.height)")
@@ -183,8 +180,8 @@ struct PillButtonHitAreaTests {
         let (harness, _, _, checker) = onboardingPermissions(openedPane: openedPane)
         var seen = 0
         let total = { checker.requestAccessibilityCallCount + openedPane.count }
-        // The Grant row sits at the right of the window, a little below the middle.
-        let region = NSRect(x: 250, y: 180, width: 102, height: 100)
+        // The Grant row sits at the right of the window, in its upper half.
+        let region = NSRect(x: 250, y: 225, width: 102, height: 70)
         let box = try #require(hitBounds(
             in: region, step: 4,
             click: { harness.click(at: $0) },
@@ -200,7 +197,7 @@ struct PillButtonHitAreaTests {
         defer { closeWindows() }
         // The 324pt-wide pill starts 28pt in; click just inside its left edge.
         var hit = false
-        for y in stride(from: 140.0, through: 190.0, by: 3.0) where !hit {
+        for y in stride(from: 84.0, through: 118.0, by: 3.0) where !hit {
             let probe = onboardingPermissions()
             probe.0.click(at: CGPoint(x: 32, y: y))
             if probe.1.step == .confirmation { hit = true }
@@ -214,7 +211,7 @@ struct PillButtonHitAreaTests {
     func notTodayRespondsInItsPadding() throws {
         defer { closeWindows() }
         let dismissed = Counter()
-        let harness = Harness(DonationView(keyState: DonationWindowKeyState(), onDismiss: { dismissed.count += 1 }, openURL: { _ in }))
+        let harness = Harness(DonationView(keyState: DonationWindowKeyState(), onDismiss: { dismissed.count += 1 }, openURL: { _ in false }))
         var seen = 0
         // The button sits under the body text, near the window's lower middle.
         let region = NSRect(x: 100, y: 40, width: 180, height: 70)
@@ -226,5 +223,28 @@ struct PillButtonHitAreaTests {
         // "Not today" on its own is about 15pt tall and 62pt wide.
         #expect(box.height >= 24, "got \(box.height)")
         #expect(box.width >= 70, "got \(box.width)")
+    }
+
+    @Test("Buy me a coffee closes the window once the page opened, and stays up if it did not")
+    func coffeeButtonDismissesOnlyAfterASuccessfulOpen() throws {
+        defer { closeWindows() }
+        for opens in [true, false] {
+            let dismissed = Counter()
+            let opened = Counter()
+            let harness = Harness(DonationView(
+                keyState: DonationWindowKeyState(),
+                onDismiss: { dismissed.count += 1 },
+                openURL: { _ in opened.count += 1; return opens }
+            ))
+            // Down the left padding of the coffee button, clear of every other control.
+            let column = NSRect(x: 40, y: 0, width: 0, height: harness.bounds.height)
+            var seen = 0
+            _ = try #require(hitBounds(
+                in: column, step: 4,
+                click: { harness.click(at: $0) },
+                didFire: { defer { seen = opened.count }; return opened.count > seen }
+            ))
+            #expect((dismissed.count > 0) == opens)
+        }
     }
 }
