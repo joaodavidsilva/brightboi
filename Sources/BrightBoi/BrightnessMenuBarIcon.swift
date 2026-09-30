@@ -65,6 +65,29 @@ struct BrightnessMenuBarIcon: View {
         return canvasHeight * (discBottom + discHeight * clamped)
     }
 
+    /// How wide the fill's edge is softened, in points: one pixel on a
+    /// Retina bar, so the edge pixel's coverage tracks the level exactly.
+    static let fillEdgeSoftness: CGFloat = 0.5
+
+    /// Gradient stops, top to bottom over the canvas, for the mask that keeps
+    /// the fill below the level: transparent above it, opaque below. The soft
+    /// edge slides from wholly below the disc at 0 to wholly above it at 1,
+    /// so an empty glyph has no lit pixel and a full one no partly lit row,
+    /// while every level in between still lands on its own sub-pixel row.
+    static func fillMaskStops(fraction: Double, canvasHeight: CGFloat) -> [Gradient.Stop] {
+        let edge = canvasHeight - fillMaskHeight(fraction: fraction, canvasHeight: canvasHeight)
+        let clamped = CGFloat(min(max(fraction, 0), 1))
+        let centre = edge + fillEdgeSoftness * (0.5 - clamped)
+        let start = min(max((centre - fillEdgeSoftness / 2) / canvasHeight, 0), 1)
+        let end = min(max((centre + fillEdgeSoftness / 2) / canvasHeight, 0), 1)
+        return [
+            .init(color: .clear, location: 0),
+            .init(color: .clear, location: start),
+            .init(color: .black, location: end),
+            .init(color: .black, location: 1)
+        ]
+    }
+
     /// What VoiceOver says for the status item.
     static func accessibilityLabel(percentage: Double, isBoosted: Bool) -> String {
         let level = "BrightBoi, brightness \(Int(percentage.rounded())) percent"
@@ -138,13 +161,21 @@ struct MenuBarGlyph: View {
                 // Sized to the canvas first, so the mask's height is measured
                 // against the same frame the disc constants were.
                 .frame(width: canvas.width, height: canvas.height)
-                .mask(alignment: .bottom) {
-                    Rectangle()
-                        .frame(height: BrightnessMenuBarIcon.fillMaskHeight(
+                .mask {
+                    // A soft edge rather than a rectangle: SwiftUI snaps a
+                    // rectangle's edges to whole device pixels, which made
+                    // three levels in a row draw identically. A gradient is
+                    // evaluated per pixel, so the edge row's coverage follows
+                    // the exact fill level.
+                    LinearGradient(
+                        stops: BrightnessMenuBarIcon.fillMaskStops(
                             fraction: fraction,
                             canvasHeight: canvas.height
-                        ))
-                        .frame(maxHeight: .infinity, alignment: .bottom)
+                        ),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(width: canvas.width, height: canvas.height)
                 }
         }
         .font(.system(size: BrightnessMenuBarIcon.symbolPointSize))
