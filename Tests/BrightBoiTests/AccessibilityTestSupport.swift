@@ -27,6 +27,32 @@ enum OffscreenWindows {
 /// (A plain borderless `NSWindow` refuses key status.)
 final class OffscreenWindow: NSWindow {
     override var canBecomeKey: Bool { true }
+    /// The app is never active under test (activating it would take keyboard
+    /// focus from whoever is using the machine), so AppKit reports no key
+    /// window. macOS 15's SwiftUI sends keys to a focused view only in the
+    /// key window, so this window says it is key, as the open popover is.
+    override var isKeyWindow: Bool { true }
+
+    /// The mouse up a click in flight hands to a control that tracks the
+    /// mouse, in place of reading one from the event queue.
+    var mouseUpForTracking: NSEvent?
+
+    private func takeMouseUp(_ mask: NSEvent.EventTypeMask) -> NSEvent? {
+        guard mask.contains(.leftMouseUp), let up = mouseUpForTracking else { return nil }
+        mouseUpForTracking = nil
+        print("DIAG tracking loop took the mouse up")
+        return up
+    }
+
+    override func nextEvent(matching mask: NSEvent.EventTypeMask) -> NSEvent? {
+        takeMouseUp(mask) ?? super.nextEvent(matching: mask)
+    }
+
+    override func nextEvent(
+        matching mask: NSEvent.EventTypeMask, until expiration: Date?, inMode mode: RunLoop.Mode, dequeue: Bool
+    ) -> NSEvent? {
+        takeMouseUp(mask) ?? super.nextEvent(matching: mask, until: expiration, inMode: mode, dequeue: dequeue)
+    }
 }
 
 /// A view hosted in an off-screen window. `orderFrontRegardless` puts it "on
@@ -104,8 +130,19 @@ struct OffscreenHost<V: View> {
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
             )!
         }
+        // A native button tracks its own click: on mouse down it loops on the
+        // window's event queue until the mouse comes up, so a mouse up sent
+        // only after `sendEvent` returns is never seen and the test hangs
+        // (macOS 15). The window hands that loop the mouse up; if no loop
+        // asked for it, it is sent the ordinary way once the down is done.
+        let up = mouse(.leftMouseUp)
+        guard let window = window as? OffscreenWindow else { return }
+        window.mouseUpForTracking = up
         window.sendEvent(mouse(.leftMouseDown))
-        window.sendEvent(mouse(.leftMouseUp))
+        if window.mouseUpForTracking != nil {
+            window.mouseUpForTracking = nil
+            window.sendEvent(up)
+        }
     }
 }
 

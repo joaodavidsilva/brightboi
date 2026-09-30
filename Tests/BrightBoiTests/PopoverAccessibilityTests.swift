@@ -189,7 +189,9 @@ struct PopoverAccessibilityTests {
             host.press(key: code, characters: String(UnicodeScalar(scalar)!))
             host.settle()
         }
+        print("DIAG arrows fr=\(String(describing: host.window.firstResponder)) key=\(host.window.isKeyWindow) active=\(NSApp.isActive)")
         press(126, NSUpArrowFunctionKey)
+        print("DIAG arrows after up: \(rig.controller.currentState.percentage)")
         #expect(rig.controller.currentState.percentage == 155)
         press(124, NSRightArrowFunctionKey)
         #expect(rig.controller.currentState.percentage == 160)
