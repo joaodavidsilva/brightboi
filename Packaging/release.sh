@@ -1,12 +1,25 @@
 #!/bin/bash
 # Produces the final shippable artifact: a Developer-ID-signed, notarized,
-# stapled BrightBoi.app packaged into a distributable .zip. BrightBoi ships
-# directly rather than through the Mac App Store, because it uses private
-# APIs the App Store disallows.
+# stapled BrightBoi.app packaged into a distributable .zip. BrightBoi is
+# distributed directly rather than through the Mac App Store: it uses private
+# frameworks (DisplayServices and CoreBrightness) for the 0-100% range and
+# the auto-brightness switch.
 #
 # Usage: NOTARY_PROFILE=<profile-name> Packaging/release.sh
 #
 # Run it from a clean checkout of a tag named v<CFBundleShortVersionString>.
+#
+# Releasing, start to finish:
+#   1. Move the changes from "Unreleased" in CHANGELOG.md into a new
+#      "## [<version>] - <date>" section, and set the same version in
+#      Packaging/Info.plist. If the signing certificate differs from the
+#      previous release, keep the re-grant line in that section (see
+#      Packaging/release-notes-snippet.md).
+#   2. Commit, then tag the commit v<version>.
+#   3. Run this script. It builds, notarizes and packages the zip, and writes
+#      that CHANGELOG section to release-notes.md next to it.
+#   4. Publish with the command it prints at the end. The release notes are
+#      the matching CHANGELOG section.
 #
 # One-time setup this script assumes is already done on the machine running
 # it (real Apple Developer credentials — deliberately not scripted or
@@ -26,6 +39,7 @@ DIST_DIR="$ROOT_DIR/.build/dist"
 NOTARIZE_ZIP="$DIST_DIR/BrightBoi-notarize.zip"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT_DIR/Packaging/Info.plist")"
 ZIP_PATH="$DIST_DIR/BrightBoi-$VERSION.zip"
+NOTES_PATH="$DIST_DIR/release-notes.md"
 
 : "${NOTARY_PROFILE:?Set NOTARY_PROFILE to a profile created via 'xcrun notarytool store-credentials'}"
 
@@ -38,6 +52,14 @@ if [[ "$tag" != "v$VERSION" ]]; then
 fi
 if ! git -C "$ROOT_DIR" diff --quiet HEAD; then
     echo "error: the working tree has uncommitted changes; release from a clean checkout." >&2
+    exit 1
+fi
+
+# The release notes are the CHANGELOG section for this version. Check it
+# before the long build and notarization, not after.
+release_notes="$(awk -v heading="## [$VERSION]" 'index($0, heading) == 1 { found = 1; next } found && /^## / { exit } found' "$ROOT_DIR/CHANGELOG.md")"
+if [[ -z "${release_notes//[[:space:]]/}" ]]; then
+    echo "error: CHANGELOG.md has no '## [$VERSION]' section with content." >&2
     exit 1
 fi
 
@@ -56,6 +78,7 @@ fi
 
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
+printf '%s\n' "$release_notes" > "$NOTES_PATH"
 
 # Apple's documented submission format: a zip made with ditto (preserves the
 # bundle structure and resource forks; a plain zip(1) archive can corrupt
@@ -104,4 +127,4 @@ spctl --assess --type execute -v "$verify_dir/BrightBoi.app"
 
 echo "Release artifact ready: $ZIP_PATH"
 echo "Checksum: $ZIP_PATH.sha256"
-echo "Publish with: gh release create v$VERSION '$ZIP_PATH' '$ZIP_PATH.sha256' --verify-tag --notes-file <notes.md>"
+echo "Publish with: gh release create v$VERSION '$ZIP_PATH' '$ZIP_PATH.sha256' --verify-tag --notes-file '$NOTES_PATH'"
