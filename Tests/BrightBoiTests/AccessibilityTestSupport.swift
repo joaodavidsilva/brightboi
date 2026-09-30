@@ -23,6 +23,12 @@ enum OffscreenWindows {
     }
 }
 
+/// A borderless window that can be key, as the real Settings window is.
+/// (A plain borderless `NSWindow` refuses key status.)
+final class OffscreenWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
 /// A view hosted in an off-screen window. `orderFrontRegardless` puts it "on
 /// screen" so SwiftUI lays out, builds its accessibility tree and routes
 /// events, but at -30000,-30000 no display ever shows it.
@@ -36,12 +42,16 @@ struct OffscreenHost<V: View> {
         hosting = NSHostingView(rootView: view)
         hosting.appearance = NSAppearance(named: appearance)
         hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
-        window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window = OffscreenWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         if let title { window.title = title }
         window.contentView = hosting
         window.setFrameOrigin(NSPoint(x: -30_000, y: -30_000))
         window.orderFrontRegardless()
+        // SwiftUI on macOS 15 routes keys and focus only to the key window;
+        // later systems do not insist. Making it key changes nothing on
+        // screen: the app stays inactive and the window is far off every display.
+        window.makeKey()
         OffscreenWindows.open.append(window)
         settle()
     }
@@ -88,13 +98,14 @@ struct OffscreenHost<V: View> {
     /// A left click at `point` (window coordinates, origin bottom-left),
     /// through `NSWindow.sendEvent` like a real mouse.
     func click(at point: CGPoint) {
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let event = NSEvent.mouseEvent(
+        func mouse(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(
                 with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
             )!
-            window.sendEvent(event)
         }
+        window.sendEvent(mouse(.leftMouseDown))
+        window.sendEvent(mouse(.leftMouseUp))
     }
 }
 

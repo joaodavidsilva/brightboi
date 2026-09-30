@@ -312,11 +312,15 @@ struct MenuBarGlyphPixelTests {
         // Outside the badge's 9pt knockout circle the sun is exactly as it was.
         let centre = (x: 15.5, y: 4.5)
         var changed = 0
+        // The same shape can land a few 8-bit levels apart between renderers:
+        // the macOS 26 runner draws one sun pixel 4 levels (0.016) off once
+        // the badge is cut from it. A moved or missing ray differs by far more.
+        let tolerance = 0.05
         for y in 0..<plain.height {
             for x in 0..<plain.width {
                 let point = (x: (Double(x) + 0.5) / Double(scale), y: (Double(y) + 0.5) / Double(scale))
                 let outside = hypot(point.x - centre.x, point.y - centre.y) > 4.5 + 0.75
-                if outside, abs(plain.at(x, y) - withBadge.at(x, y)) > 0.01 { changed += 1; print("DIAG pixel x=\(x) y=\(y) plain=\(plain.at(x, y)) badge=\(withBadge.at(x, y)) dist=\(hypot(point.x - centre.x, point.y - centre.y))") }
+                if outside, abs(plain.at(x, y) - withBadge.at(x, y)) > tolerance { changed += 1 }
             }
         }
         #expect(changed == 0, "\(changed) pixels outside the badge's knockout changed when Boost came on")
