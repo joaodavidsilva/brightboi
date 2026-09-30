@@ -8,39 +8,35 @@ import SwiftUI
 struct OnboardingView: View {
     var model: OnboardingModel
 
-    @Environment(\.colorScheme) private var colorScheme
-
     static let contentSize = CGSize(width: 380, height: 420)
 
     var body: some View {
-        let palette = Palette(colorScheme: colorScheme)
-
         VStack(spacing: 0) {
             Spacer(minLength: 0)
 
             switch model.step {
             case .welcome:
-                WelcomeStepView(palette: palette, onAdvance: model.advance)
+                WelcomeStepView(onAdvance: model.advance)
             case .permissions:
-                PermissionsStepView(model: model, palette: palette)
+                PermissionsStepView(model: model)
             case .confirmation:
-                ConfirmationStepView(palette: palette, onAdvance: model.advance)
+                ConfirmationStepView(onAdvance: model.advance)
             }
 
             Spacer(minLength: 0)
 
-            pageDots(palette: palette)
+            pageDots()
                 .padding(.bottom, 22)
         }
         .frame(width: Self.contentSize.width, height: Self.contentSize.height)
-        .background(palette.background)
+        .background(Color.surfaceWindow)
     }
 
-    private func pageDots(palette: Palette) -> some View {
+    private func pageDots() -> some View {
         HStack(spacing: 5) {
             ForEach(OnboardingModel.Step.allCases, id: \.self) { step in
                 Circle()
-                    .fill(step == model.step ? palette.dotActive : palette.dotInactive)
+                    .fill(step == model.step ? Color.pageDotActive : Color.pageDotInactive)
                     .frame(width: 6, height: 6)
             }
         }
@@ -50,32 +46,31 @@ struct OnboardingView: View {
 // MARK: - Step 1: Welcome
 
 private struct WelcomeStepView: View {
-    var palette: OnboardingView.Palette
     var onAdvance: () -> Void
 
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: "sun.max.fill")
-                .font(.system(size: 40))
-                .foregroundStyle(palette.sunGlyph)
+                .font(.system(size: Theme.GlyphSize.onboarding))
+                .foregroundStyle(Color.sunGlyph)
 
             Text("Hey, I'm BrightBoi.")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(palette.primaryText)
+                .font(Theme.Typography.title)
+                .foregroundStyle(Color.textPrimary)
 
             Text("Your screen has been holding out on you. macOS stops the slider at 500 nits; the panel is rated for 1000. I go all the way there.")
-                .font(.system(size: 13))
-                .foregroundStyle(palette.secondaryText)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Color.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 280)
 
             Text("I also switch off macOS's auto-brightness so the light sensor can't undo your level — I put it back the way I found it when you quit.")
-                .font(.system(size: 11))
-                .foregroundStyle(palette.tertiaryText)
+                .font(Theme.Typography.secondary)
+                .foregroundStyle(Color.textTertiary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 280)
 
-            PrimaryButton(title: "Let's go", palette: palette, action: onAdvance)
+            PrimaryButton(title: "Let's go", action: onAdvance)
                 .padding(.top, 8)
         }
         .padding(.horizontal, 30)
@@ -86,17 +81,16 @@ private struct WelcomeStepView: View {
 
 private struct PermissionsStepView: View {
     var model: OnboardingModel
-    var palette: OnboardingView.Palette
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("One permission, then I'll be quiet.")
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(palette.primaryText)
+                .font(Theme.Typography.title)
+                .foregroundStyle(Color.textPrimary)
 
             Text("This is only for the F1/F2 keys. The slider works without it.")
-                .font(.system(size: 12.5))
-                .foregroundStyle(palette.secondaryText)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Color.textSecondary)
 
             VStack(spacing: 0) {
                 permissionRow(
@@ -106,18 +100,21 @@ private struct PermissionsStepView: View {
                     onGrant: model.requestAccessibility
                 )
             }
-            .background(palette.rowBackground, in: RoundedRectangle(cornerRadius: 9))
+            .background(Color.fillGrouped, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .contrastBorder(cornerRadius: Theme.Radius.card)
             .animation(.default, value: model.accessibilityGranted)
 
-            PrimaryButton(title: "Continue", palette: palette, action: model.advance)
+            PrimaryButton(title: "Continue", action: model.advance)
 
             Button("Skip — slider only", action: model.skip)
-                .buttonStyle(.plain)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(palette.secondaryText)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(palette.skipBackground, in: RoundedRectangle(cornerRadius: 7))
+                .buttonStyle(PillButtonStyle(
+                    foreground: .textSecondary,
+                    cornerRadius: Theme.Radius.button,
+                    horizontalPadding: 0,
+                    verticalPadding: 8,
+                    fillsWidth: true
+                ))
+                .font(Theme.Typography.buttonLarge)
         }
         .padding(.horizontal, 28)
         // The grant happens in System Settings, where BrightBoi is not the
@@ -135,26 +132,31 @@ private struct PermissionsStepView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13))
-                    .foregroundStyle(palette.primaryText)
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Color.textPrimary)
                 Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.tertiaryText)
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(Color.textTertiary)
             }
             Spacer()
             if granted {
-                Label("Done", systemImage: "checkmark.circle.fill")
-                    .labelStyle(.titleAndIcon)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.green)
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("Done")
+                        .foregroundStyle(Color.textSecondary)
+                }
+                .font(Theme.Typography.callout)
+                .accessibilityElement(children: .combine)
             } else {
                 Button("Grant", action: onGrant)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 5)
-                    .background(palette.accent, in: RoundedRectangle(cornerRadius: 6))
+                    .buttonStyle(PillButtonStyle(
+                        fill: .accentButton,
+                        foreground: .white,
+                        horizontalPadding: 12,
+                        verticalPadding: 5
+                    ))
+                    .font(Theme.Typography.control)
             }
         }
         .padding(.horizontal, 12)
@@ -165,41 +167,41 @@ private struct PermissionsStepView: View {
 // MARK: - Step 3: Confirmation
 
 private struct ConfirmationStepView: View {
-    var palette: OnboardingView.Palette
     var onAdvance: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("You're up top now.")
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(palette.primaryText)
+                .font(Theme.Typography.title)
+                .foregroundStyle(Color.textPrimary)
 
             Text("I live in the menu bar. Click the sun, or just hit F2 past where it used to stop.")
-                .font(.system(size: 12.5))
-                .foregroundStyle(palette.secondaryText)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Color.textSecondary)
 
             VStack(spacing: 10) {
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(palette.trackBackground)
+                        .fill(Color.fillTrack)
                         .frame(height: 6)
                     RoundedRectangle(cornerRadius: 3)
-                        .fill(palette.primaryText)
+                        .fill(Color.textPrimary)
                         .frame(width: 100, height: 6)
                 }
                 HStack {
                     Text("Everything macOS gave you")
                     Spacer()
                     Text("Everything it didn't")
-                        .foregroundStyle(palette.sunGlyph)
+                        .foregroundStyle(Color.sunText)
                 }
-                .font(.system(size: 10.5))
-                .foregroundStyle(palette.tertiaryText)
+                .font(Theme.Typography.secondary)
+                .foregroundStyle(Color.textTertiary)
             }
             .padding(13)
-            .background(palette.rowBackground, in: RoundedRectangle(cornerRadius: 9))
+            .background(Color.fillGrouped, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .contrastBorder(cornerRadius: Theme.Radius.card)
 
-            PrimaryButton(title: "Get bright", palette: palette, action: onAdvance)
+            PrimaryButton(title: "Get bright", action: onAdvance)
         }
         .padding(.horizontal, 28)
     }
@@ -209,76 +211,26 @@ private struct ConfirmationStepView: View {
 
 private struct PrimaryButton: View {
     var title: String
-    var palette: OnboardingView.Palette
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .foregroundStyle(.white)
-                .background(palette.accent, in: RoundedRectangle(cornerRadius: 7))
+                .font(Theme.Typography.buttonLarge)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PillButtonStyle(
+            fill: .accentButton,
+            foreground: .white,
+            cornerRadius: Theme.Radius.button,
+            horizontalPadding: 0,
+            verticalPadding: 8,
+            fillsWidth: true
+        ))
         // Explicit, rather than relying on whichever control the window
         // hands initial keyboard focus to by default — verified live that
         // without this, Return activated the window's own native close
         // button instead of this one, dismissing onboarding without
         // completing it.
         .keyboardShortcut(.defaultAction)
-    }
-}
-
-extension OnboardingView {
-    /// Every color this window draws, resolved once per render from
-    /// `colorScheme` — same pattern as `BrightnessMenuContent.Palette`.
-    struct Palette {
-        let background: Color
-        let primaryText: Color
-        let secondaryText: Color
-        let tertiaryText: Color
-        let accent: Color
-        let sunGlyph: Color
-        let rowBackground: Color
-        let skipBackground: Color
-        let divider: Color
-        let trackBackground: Color
-        let dotActive: Color
-        let dotInactive: Color
-
-        init(colorScheme: ColorScheme) {
-            switch colorScheme {
-            case .dark:
-                background = Color(red: 0.122, green: 0.122, blue: 0.135)
-                primaryText = .white
-                secondaryText = Color.white.opacity(0.6)
-                tertiaryText = Color.white.opacity(0.42)
-                accent = Color(red: 0.039, green: 0.518, blue: 1.0)
-                sunGlyph = Color(red: 1.0, green: 0.808, blue: 0.478)
-                rowBackground = Color.white.opacity(0.06)
-                skipBackground = Color.white.opacity(0.1)
-                divider = Color.white.opacity(0.09)
-                trackBackground = Color.white.opacity(0.16)
-                dotActive = Color.white.opacity(0.85)
-                dotInactive = Color.white.opacity(0.22)
-            case .light:
-                fallthrough
-            @unknown default:
-                background = Color(red: 0.949, green: 0.949, blue: 0.957)
-                primaryText = Color(red: 0.114, green: 0.114, blue: 0.122)
-                secondaryText = Color.black.opacity(0.55)
-                tertiaryText = Color.black.opacity(0.42)
-                accent = Color(red: 0.0, green: 0.478, blue: 1.0)
-                sunGlyph = Color(red: 0.910, green: 0.537, blue: 0.047)
-                rowBackground = Color.white
-                skipBackground = Color.white
-                divider = Color.black.opacity(0.08)
-                trackBackground = Color.black.opacity(0.11)
-                dotActive = Color.black.opacity(0.6)
-                dotInactive = Color.black.opacity(0.16)
-            }
-        }
     }
 }

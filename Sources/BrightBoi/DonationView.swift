@@ -11,120 +11,80 @@ import SwiftUI
 struct DonationView: View {
     var keyState: DonationWindowKeyState
     var onDismiss: () -> Void
-
-    @Environment(\.colorScheme) private var colorScheme
+    /// Opens the support page. Injectable so nothing that renders or clicks
+    /// this view in a test can reach the browser.
+    var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
 
     static let contentSize = CGSize(width: 380, height: 300)
+
+    /// Buy Me a Coffee's brand yellow and the dark text on it. They are the
+    /// brand's own colours, so they are the same in both appearances and stay
+    /// outside `Theme`.
+    private static let ctaBackground = Color(red: 1.0, green: 0.867, blue: 0.0)
+    private static let ctaText = Color(red: 0.051, green: 0.047, blue: 0.043)
 
     private static let supportURL = URL(string: "https://buymeacoffee.com/ptlghost")!
 
     var body: some View {
-        let palette = Palette(colorScheme: colorScheme)
-
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: "sun.max.fill")
-                    .font(.system(size: 26))
-                    .foregroundStyle(palette.sunGlyph)
+                    .font(.system(size: Theme.GlyphSize.donation))
+                    .foregroundStyle(Color.sunGlyph)
                 Text("Free app. Expensive boi.")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(palette.primaryText)
+                    .font(Theme.Typography.title)
+                    .foregroundStyle(Color.textPrimary)
             }
 
             Text("You're pulling 1000 nits out of hardware you already own. If that made an afternoon outside bearable, buy me a coffee — entirely up to you. BrightBoi already started; it's up in the menu bar.")
-                .font(.system(size: 12.5))
-                .foregroundStyle(palette.secondaryText)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Color.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(spacing: 8) {
                 Button(action: openSupportPage) {
                     Text("Buy me a coffee")
-                        .font(.system(size: 13.5, weight: .bold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .foregroundStyle(palette.ctaText)
-                        .background(palette.ctaBackground, in: RoundedRectangle(cornerRadius: 8))
+                        .font(Theme.Typography.brandCTA)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PillButtonStyle(
+                    fill: Self.ctaBackground,
+                    foreground: Self.ctaText,
+                    cornerRadius: Theme.Radius.button,
+                    horizontalPadding: 0,
+                    verticalPadding: 9,
+                    fillsWidth: true
+                ))
 
                 HStack(spacing: 8) {
                     Button("Not today", action: onDismiss)
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(palette.secondaryText)
+                        .buttonStyle(.link(foreground: .textSecondary, horizontalPadding: 8, verticalPadding: 6))
+                        .font(Theme.Typography.buttonLarge)
                         .keyboardShortcut(.cancelAction)
 
                     if keyState.isKey {
                         Text("or just press ⎋")
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.tertiaryText)
+                            .font(Theme.Typography.secondary)
+                            .foregroundStyle(Color.textTertiary)
                     }
                 }
                 .frame(maxWidth: .infinity)
             }
             .padding(.top, 2)
 
-            Rectangle()
-                .fill(palette.divider)
-                .frame(height: 0.5)
+            ThemeDivider()
 
             Text("Opens buymeacoffee.com in your browser.")
-                .font(.system(size: 11))
-                .foregroundStyle(palette.tertiaryText)
+                .font(Theme.Typography.secondary)
+                .foregroundStyle(Color.textTertiary)
         }
         .padding(.horizontal, 24)
         .padding(.top, 22)
         .padding(.bottom, 20)
         .frame(width: Self.contentSize.width)
-        .background(palette.background)
+        .background(Color.surfaceWindow)
     }
 
     private func openSupportPage() {
-        NSWorkspace.shared.open(Self.supportURL)
-    }
-}
-
-extension DonationView {
-    /// Every color this window draws, resolved once per render from
-    /// `colorScheme` — same pattern as `OnboardingView.Palette`. The sun
-    /// glyph and background values match `OnboardingView.Palette` exactly
-    /// (the mockup's hex values for both windows coincide), kept as
-    /// separate constants here since this window's palette is otherwise
-    /// independent.
-    struct Palette {
-        let background: Color
-        let primaryText: Color
-        let secondaryText: Color
-        let tertiaryText: Color
-        let sunGlyph: Color
-        let ctaBackground: Color
-        let ctaText: Color
-        let divider: Color
-
-        init(colorScheme: ColorScheme) {
-            // Buy Me a Coffee's brand yellow — identical in both mockup
-            // variants, so it isn't scheme-dependent.
-            ctaBackground = Color(red: 1.0, green: 0.867, blue: 0.0)
-            ctaText = Color(red: 0.051, green: 0.047, blue: 0.043)
-
-            switch colorScheme {
-            case .dark:
-                background = Color(red: 0.122, green: 0.122, blue: 0.135)
-                primaryText = .white
-                secondaryText = Color.white.opacity(0.6)
-                tertiaryText = Color.white.opacity(0.45)
-                sunGlyph = Color(red: 1.0, green: 0.808, blue: 0.478)
-                divider = Color.white.opacity(0.1)
-            case .light:
-                fallthrough
-            @unknown default:
-                background = Color(red: 0.949, green: 0.949, blue: 0.957)
-                primaryText = Color(red: 0.114, green: 0.114, blue: 0.122)
-                secondaryText = Color.black.opacity(0.55)
-                tertiaryText = Color.black.opacity(0.45)
-                sunGlyph = Color(red: 0.910, green: 0.537, blue: 0.047)
-                divider = Color.black.opacity(0.1)
-            }
-        }
+        openURL(Self.supportURL)
     }
 }

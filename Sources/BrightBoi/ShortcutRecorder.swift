@@ -258,7 +258,6 @@ struct ShortcutPill: View {
     var press: BrightnessController.KeyPress
     var combo: KeyCombo
     var recorder: ShortcutRecorder
-    var palette: BrightnessMenuContent.Palette
 
     var body: some View {
         let isArmed = recorder.armed == press
@@ -268,17 +267,16 @@ struct ShortcutPill: View {
             recorder.toggle(press)
         } label: {
             label(isArmed: isArmed, rejection: rejection)
-                .font(.system(size: 11.5, weight: .medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 6))
-                .overlay {
-                    if isArmed {
-                        RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 1.5)
-                    }
-                }
+                .font(Theme.Typography.control)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PillButtonStyle(fill: .fillGrouped, horizontalPadding: 10, verticalPadding: 5))
+        .overlay {
+            if isArmed {
+                RoundedRectangle(cornerRadius: Theme.Radius.control)
+                    .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                    .allowsHitTesting(false)
+            }
+        }
         .background(PillAnchor { recorder.register($0, for: press) })
         .accessibilityLabel("\(press.label) brightness shortcut")
         .accessibilityValue(isArmed ? "Recording. Press a key combination, or Escape to cancel" : combo.spokenName)
@@ -289,15 +287,15 @@ struct ShortcutPill: View {
     private func label(isArmed: Bool, rejection: String?) -> some View {
         if isArmed {
             HStack(spacing: 6) {
-                Text("Type shortcut…").foregroundStyle(palette.rowText)
+                Text("Type shortcut…").foregroundStyle(Color.textRow)
                 Text("esc to cancel")
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(palette.tertiaryText)
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(Color.textTertiary)
             }
         } else if let rejection {
-            Text(rejection).foregroundStyle(Color.red)
+            Text(rejection).foregroundStyle(Color.recorderError)
         } else {
-            Text(combo.displayString).foregroundStyle(palette.rowText)
+            Text(combo.displayString).foregroundStyle(Color.textRow)
         }
     }
 }

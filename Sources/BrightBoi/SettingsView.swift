@@ -3,14 +3,12 @@ import ServiceManagement
 import SwiftUI
 
 /// BrightBoi's Settings window: Boost Ceiling, Key Remap
-/// shortcut + on/off toggle, and a Permissions panel. Reuses
-/// `BrightnessMenuContent.Palette` for appearance-aware colors — no new
-/// preference, same `colorScheme`-driven approach as the popover.
+/// shortcut + on/off toggle, and a Permissions panel. Colours, type and radii
+/// come from `Theme`.
 struct SettingsView: View {
     var controller: BrightnessController
     var permissions: PermissionsModel
 
-    @Environment(\.colorScheme) private var colorScheme
     @State private var recorder: ShortcutRecorder
 
     init(controller: BrightnessController, permissions: PermissionsModel, recorder: ShortcutRecorder? = nil) {
@@ -21,20 +19,19 @@ struct SettingsView: View {
 
     var body: some View {
         let state = controller.currentState
-        let palette = BrightnessMenuContent.Palette(colorScheme: colorScheme)
         // Shortcut labels follow the keyboard layout, so redraw when it changes.
         let _ = KeyboardLayoutNames.shared.generation
 
         VStack(alignment: .leading, spacing: 18) {
-            generalSection(state: state, palette: palette)
+            generalSection(state: state)
 
             if state.supportsBoost {
-                boostCeilingSection(state: state, palette: palette)
+                boostCeilingSection(state: state)
             }
 
-            permissionsSection(state: state, palette: palette)
+            permissionsSection(state: state)
 
-            footer(palette: palette)
+            footer()
         }
         .padding(EdgeInsets(top: 20, leading: 22, bottom: 18, trailing: 22))
         .frame(width: 480)
@@ -58,8 +55,8 @@ struct SettingsView: View {
 
     // MARK: - General
 
-    private func generalSection(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
-        section(title: "General", palette: palette) {
+    private func generalSection(state: BrightnessController.State) -> some View {
+        section(title: "General") {
             VStack(alignment: .leading, spacing: 6) {
                 VStack(spacing: 0) {
                     toggleRow(
@@ -67,11 +64,10 @@ struct SettingsView: View {
                         isOn: Binding(
                             get: { state.launchAtLoginEnabled },
                             set: { controller.setLaunchAtLoginEnabled($0) }
-                        ),
-                        palette: palette
+                        )
                     )
 
-                    rowDivider(palette: palette)
+                    rowDivider()
 
                     toggleRow(
                         title: "Turn off macOS auto-brightness while BrightBoi runs",
@@ -79,11 +75,10 @@ struct SettingsView: View {
                         isOn: Binding(
                             get: { state.autoBrightnessTakeoverEnabled },
                             set: { controller.setAutoBrightnessTakeoverEnabled($0) }
-                        ),
-                        palette: palette
+                        )
                     )
 
-                    rowDivider(palette: palette)
+                    rowDivider()
 
                     toggleRow(
                         title: remapToggleTitle(state.keyRemapShortcut),
@@ -91,28 +86,28 @@ struct SettingsView: View {
                         isOn: Binding(
                             get: { state.keyRemapEnabled },
                             set: { controller.setKeyRemapEnabled($0) }
-                        ),
-                        palette: palette
+                        )
                     )
 
-                    rowDivider(palette: palette)
+                    rowDivider()
 
-                    shortcutRow(press: .raise, combo: state.keyRemapShortcut.raise, palette: palette)
+                    shortcutRow(press: .raise, combo: state.keyRemapShortcut.raise)
 
-                    rowDivider(palette: palette)
+                    rowDivider()
 
-                    shortcutRow(press: .lower, combo: state.keyRemapShortcut.lower, palette: palette)
+                    shortcutRow(press: .lower, combo: state.keyRemapShortcut.lower)
 
                     if state.keyRemapShortcut != .defaultShortcut {
-                        rowDivider(palette: palette)
-                        resetShortcutRow(palette: palette)
+                        rowDivider()
+                        resetShortcutRow()
                     }
                 }
-                .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
+                .background(Color.settingsGroupFill, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+                .contrastBorder(cornerRadius: Theme.Radius.card)
 
-                launchAtLoginNotice(state: state, palette: palette)
-                autoBrightnessUnavailableNotice(palette: palette)
-                keyRemapNotice(state: state, palette: palette)
+                launchAtLoginNotice(state: state)
+                autoBrightnessUnavailableNotice()
+                keyRemapNotice(state: state)
             }
         }
     }
@@ -122,11 +117,11 @@ struct SettingsView: View {
     /// actually change anything, so this says so rather than staying
     /// silently ineffective.
     @ViewBuilder
-    private func autoBrightnessUnavailableNotice(palette: BrightnessMenuContent.Palette) -> some View {
+    private func autoBrightnessUnavailableNotice() -> some View {
         if controller.autoBrightnessUnavailable {
             Text("Couldn't reach macOS's auto-brightness setting on this system — this switch has no effect.")
-                .font(.system(size: 11))
-                .foregroundStyle(palette.secondaryText)
+                .font(Theme.Typography.secondary)
+                .foregroundStyle(Color.textSecondary)
         }
     }
 
@@ -135,24 +130,24 @@ struct SettingsView: View {
     /// because BrightBoi isn't running from a proper Applications location.
     /// A thrown registration/unregistration error takes the same slot.
     @ViewBuilder
-    private func launchAtLoginNotice(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
+    private func launchAtLoginNotice(state: BrightnessController.State) -> some View {
         if state.launchAtLoginNeedsApproval {
             HStack {
                 Text("Needs approval in System Settings → Login Items.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.secondaryText)
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(Color.textSecondary)
                 Spacer()
                 Button("Open Login Items") {
                     SMAppService.openSystemSettingsLoginItems()
                 }
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(palette.rowText)
+                .buttonStyle(.link(foreground: .textRow, horizontalPadding: 6, verticalPadding: 3))
+                .font(Theme.Typography.secondaryMedium)
+                .padding(.trailing, -6)
             }
         } else if let message = state.launchAtLoginStatusMessage {
             Text(message)
-                .font(.system(size: 11))
-                .foregroundStyle(palette.secondaryText)
+                .font(Theme.Typography.secondary)
+                .foregroundStyle(Color.textSecondary)
         }
     }
 
@@ -160,44 +155,29 @@ struct SettingsView: View {
     /// so a dead tap is never silent; or names another app that takes the
     /// brightness keys first.
     @ViewBuilder
-    private func keyRemapNotice(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
+    private func keyRemapNotice(state: BrightnessController.State) -> some View {
         if state.keyRemapEnabled && !controller.keyRemapActive {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text("Key Remap isn't active, so macOS still handles the brightness keys.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer()
+            AdvisoryBanner(
+                icon: "exclamationmark.triangle.fill",
+                text: "Key Remap isn't active, so macOS still handles the brightness keys."
+            ) {
                 if !permissions.accessibilityGranted {
-                    actionButton("Turn on…", palette: palette) { permissions.requestOrOpenSettings(.accessibility) }
+                    actionButton("Turn on…") { permissions.requestOrOpenSettings(.accessibility) }
                 } else if permissions.inputMonitoringGranted {
-                    actionButton("Relaunch BrightBoi", palette: palette) { AppRelauncher.relaunch() }
+                    actionButton("Relaunch BrightBoi") { AppRelauncher.relaunch() }
                 } else {
-                    actionButton("Try again", palette: palette) { controller.permissionsMayHaveChanged() }
+                    actionButton("Try again") { controller.permissionsMayHaveChanged() }
                 }
             }
         } else if state.keyRemapEnabled, let conflict = controller.keyTapConflict {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text(conflict.message)
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            AdvisoryBanner(icon: "exclamationmark.triangle.fill", text: conflict.message)
         }
     }
 
-    private func actionButton(_ title: String, palette: BrightnessMenuContent.Palette, action: @escaping () -> Void) -> some View {
+    private func actionButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
-            .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(palette.rowText)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(palette.quickSetMaxBackground, in: RoundedRectangle(cornerRadius: 6))
+            .buttonStyle(PillButtonStyle())
+            .font(Theme.Typography.control)
     }
 
     private func remapToggleTitle(_ shortcut: KeyRemapShortcut) -> String {
@@ -208,21 +188,21 @@ struct SettingsView: View {
 
     // MARK: - Boost Ceiling
 
-    private func boostCeilingSection(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
-        section(title: "Boost ceiling", palette: palette) {
+    private func boostCeilingSection(state: BrightnessController.State) -> some View {
+        section(title: "Boost ceiling") {
             VStack(alignment: .leading, spacing: 9) {
                 HStack(alignment: .lastTextBaseline) {
                     Text("Don't let me go past")
-                        .font(.system(size: 13))
-                        .foregroundStyle(palette.rowText)
+                        .font(Theme.Typography.body)
+                        .foregroundStyle(Color.textRow)
                     Spacer()
                     HStack(spacing: 4) {
                         Text("\(Int(state.boostCeiling))%")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(palette.primaryText)
+                            .font(Theme.Typography.value)
+                            .foregroundStyle(Color.textPrimary)
                         Text("· \(Int(state.boostCeilingNits)) nits")
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.secondaryText)
+                            .font(Theme.Typography.secondary.monospacedDigit())
+                            .foregroundStyle(Color.textSecondary)
                     }
                 }
 
@@ -234,69 +214,71 @@ struct SettingsView: View {
                     in: BrightnessController.nominalCeilingPercentage...BrightnessController.maximumPercentage,
                     step: BrightnessController.percentageGranularity
                 )
-                .tint(palette.quickSetMaxText)
+                .tint(.boost)
 
                 HStack {
                     Text("100%")
                     Spacer()
                     Text("200% · 1000 nits")
                 }
-                .font(.system(size: 10))
-                .foregroundStyle(palette.tertiaryText)
+                .font(Theme.Typography.caption)
+                .foregroundStyle(Color.textTertiary)
 
                 Text("200% is the panel's sustained full-screen rating. BrightBoi won't offer more than that, no matter how nicely you ask.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.secondaryText)
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(Color.textSecondary)
             }
             .padding(13)
-            .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
+            .background(Color.settingsGroupFill, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+            .contrastBorder(cornerRadius: Theme.Radius.card)
         }
     }
 
     // MARK: - Permissions
 
-    private func permissionsSection(state: BrightnessController.State, palette: BrightnessMenuContent.Palette) -> some View {
-        section(title: "Permissions", palette: palette) {
+    private func permissionsSection(state: BrightnessController.State) -> some View {
+        section(title: "Permissions") {
             VStack(alignment: .leading, spacing: 4) {
                 VStack(spacing: 0) {
-                    permissionRow(title: "Accessibility", granted: permissions.accessibilityGranted, palette: palette) {
+                    permissionRow(title: "Accessibility", granted: permissions.accessibilityGranted) {
                         permissions.requestOrOpenSettings(.accessibility)
                     }
                     // Whether this Mac needs Input Monitoring for the key tap
                     // is only known when the tap fails with Accessibility
                     // already granted, so the row appears only then.
                     if permissions.needsInputMonitoring(keyRemapEnabled: state.keyRemapEnabled, keyTapActive: controller.keyRemapActive) {
-                        rowDivider(palette: palette)
-                        permissionRow(title: "Input Monitoring", granted: permissions.inputMonitoringGranted, palette: palette) {
+                        rowDivider()
+                        permissionRow(title: "Input Monitoring", granted: permissions.inputMonitoringGranted) {
                             permissions.requestOrOpenSettings(.inputMonitoring)
                         }
                     }
                 }
-                .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 9))
+                .background(Color.settingsGroupFill, in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+                .contrastBorder(cornerRadius: Theme.Radius.card)
                 .animation(.default, value: permissions.accessibilityGranted)
 
                 Text("Needed only for the brightness keys. The slider and custom shortcuts work without it.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(palette.secondaryText)
+                    .font(Theme.Typography.secondary)
+                    .foregroundStyle(Color.textSecondary)
             }
         }
     }
 
-    private func permissionRow(title: String, granted: Bool, palette: BrightnessMenuContent.Palette, onGrant: @escaping () -> Void) -> some View {
+    private func permissionRow(title: String, granted: Bool, onGrant: @escaping () -> Void) -> some View {
         HStack {
             Text(title)
-                .font(.system(size: 13))
-                .foregroundStyle(palette.rowText)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Color.textRow)
             Spacer()
             HStack(spacing: 6) {
                 Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                    .foregroundStyle(granted ? .green : .orange)
+                    .foregroundStyle(granted ? Color.green : Color.boost)
                 Text(granted ? "Granted" : "Not granted")
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.secondaryText)
+                    .font(Theme.Typography.callout)
+                    .foregroundStyle(Color.textSecondary)
             }
             if !granted {
-                actionButton("Turn on…", palette: palette, action: onGrant)
+                actionButton("Turn on…", action: onGrant)
             }
         }
         .padding(.horizontal, 13)
@@ -305,46 +287,42 @@ struct SettingsView: View {
 
     // MARK: - Footer
 
-    private func footer(palette: BrightnessMenuContent.Palette) -> some View {
+    private func footer() -> some View {
         HStack {
             Text("BrightBoi 1.0 · built-in display only")
-                .font(.system(size: 11))
-                .foregroundStyle(palette.tertiaryText)
+                .font(Theme.Typography.secondary)
+                .foregroundStyle(Color.textTertiary)
             Spacer()
             Button("Quit BrightBoi") {
                 NSApplication.shared.terminate(nil)
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(palette.rowText)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .background(palette.quickSetBackground, in: RoundedRectangle(cornerRadius: 6))
+            .buttonStyle(PillButtonStyle(horizontalPadding: 12, verticalPadding: 5))
+            .font(Theme.Typography.control)
         }
     }
 
     // MARK: - Shared row building blocks
 
-    private func section(title: String, palette: BrightnessMenuContent.Palette, @ViewBuilder content: () -> some View) -> some View {
+    private func section(title: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
+                .font(Theme.Typography.sectionHeader)
                 .tracking(0.3)
-                .foregroundStyle(palette.tertiaryText)
+                .foregroundStyle(Color.settingsSectionHeader)
             content()
         }
     }
 
-    private func toggleRow(title: String, subtitle: String? = nil, isOn: Binding<Bool>, palette: BrightnessMenuContent.Palette) -> some View {
+    private func toggleRow(title: String, subtitle: String? = nil, isOn: Binding<Bool>) -> some View {
         HStack(alignment: subtitle == nil ? .center : .top, spacing: 20) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13))
-                    .foregroundStyle(palette.rowText)
+                    .font(Theme.Typography.body)
+                    .foregroundStyle(Color.textRow)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.secondaryText)
+                        .font(Theme.Typography.secondary)
+                        .foregroundStyle(Color.textSecondary)
                 }
             }
             Spacer()
@@ -356,13 +334,13 @@ struct SettingsView: View {
         .padding(.vertical, 11)
     }
 
-    private func shortcutRow(press: BrightnessController.KeyPress, combo: KeyCombo, palette: BrightnessMenuContent.Palette) -> some View {
+    private func shortcutRow(press: BrightnessController.KeyPress, combo: KeyCombo) -> some View {
         HStack {
             Text(press.label)
-                .font(.system(size: 13))
-                .foregroundStyle(palette.rowText)
+                .font(Theme.Typography.body)
+                .foregroundStyle(Color.textRow)
             Spacer()
-            ShortcutPill(press: press, combo: combo, recorder: recorder, palette: palette)
+            ShortcutPill(press: press, combo: combo, recorder: recorder)
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 9)
@@ -370,26 +348,22 @@ struct SettingsView: View {
 
     /// Shown only while the shortcut differs from the default, so there is
     /// always a way back to F1 / F2.
-    private func resetShortcutRow(palette: BrightnessMenuContent.Palette) -> some View {
+    private func resetShortcutRow() -> some View {
         HStack {
             Spacer()
             Button("Reset to F1 / F2") {
                 controller.resetKeyRemapShortcut()
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(Color.accentColor)
-            .contentShape(Rectangle())
+            .buttonStyle(.link(foreground: .accentText, horizontalPadding: 6, verticalPadding: 3))
+            .font(Theme.Typography.secondaryMedium)
             .accessibilityHint("Restores F1 for Lower and F2 for Raise")
         }
-        .padding(.horizontal, 13)
+        .padding(.horizontal, 7)
         .padding(.vertical, 9)
     }
 
-    private func rowDivider(palette: BrightnessMenuContent.Palette) -> some View {
-        Rectangle()
-            .fill(palette.divider)
-            .frame(height: 0.5)
+    private func rowDivider() -> some View {
+        ThemeDivider()
             .padding(.leading, 13)
     }
 }
